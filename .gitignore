@@ -3,6 +3,7 @@ data/
 
 # Model checkpoints
 checkpoints/
+.generic_checkpoints/
 
 # Python
 __pycache__/
@@ -11,6 +12,7 @@ __pycache__/
 .eggs/
 dist/
 build/
+.gitignore
 
 # Virtual environment
 .venv/

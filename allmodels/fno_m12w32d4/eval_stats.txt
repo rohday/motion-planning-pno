@@ -1,0 +1,6 @@
+Checkpoint: checkpoints/fno/model_best.ckpt
+Model:      modes=12, width=32, layers=4
+
+Dataset              Resolution    L2 Loss   Accuracy  Samples
+data_256x256                256    0.61669     38.33%      100
+data_64x64                   64    0.01998     98.00%     1000
