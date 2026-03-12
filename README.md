@@ -1,5 +1,4 @@
-# Motion Planning via Operator Learning (PNO)
-
+# Hardware-Efficient Generalizable Motion Planning using Neural Operators
 ## Current Challenges
 ```
 FNO:
