@@ -1,17 +1,3 @@
-"""
-Exact copy of FNO2dMultiGoal from the official PNO repository.
-Source: ExistentialRobotics/PNO - examples/models/fnoMultiGoal.py
-Author: Zongyi Li (original FNO), adapted for PNO by Matada et al.
-
-Architecture:
-  1. Lift:           Linear(1, width)
-  2. Fourier layers: u' = σ(K(u) + W(u))   K=spectral conv, W=1×1 conv
-  3. Project:        Linear(width, 128) → GELU → Linear(128, 1)
-
-Input:  x    (B, H, W, 1) -- smooth occupancy chi, goal pixel set to -1
-Output: out  (B, H, W, 1) -- predicted value function
-"""
-
 import numpy as np
 import torch
 import torch.nn as nn
@@ -46,11 +32,6 @@ class FNO2dMultiGoal(nn.Module):
                             nn.Conv2d(self.width, self.width, 1))
 
     def forward(self, x, goal):
-        """
-        Args:
-            x:    (B, H, W, 1) -- smooth chi field
-            goal: (B, 2)       -- goal coords. Official convention: goal[:,0]=x, goal[:,1]=y
-        """
         for i in range(x.shape[0]):
             x[i][goal[i][1].long()][goal[i][0].long()] = -1
 

@@ -2,8 +2,6 @@ import torch
 
 
 class GaussianNormalizer:
-    """Normalize data to zero mean and unit variance."""
-
     def __init__(self, x, eps=1e-5):
         self.mean = torch.mean(x)
         self.std = torch.std(x)
@@ -40,6 +38,5 @@ def load_checkpoint(model, optimizer, path):
             optimizer.load_state_dict(ckpt['optimizer_state_dict'])
         return ckpt.get('epoch', 0)
     else:
-        # Raw state_dict (from official training script)
         model.load_state_dict(ckpt)
         return 0

@@ -4,6 +4,7 @@ data/
 # Model checkpoints
 checkpoints/
 .generic_checkpoints/
+*.ckpt
 
 # Python
 __pycache__/

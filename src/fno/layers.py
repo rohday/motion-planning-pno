@@ -1,17 +1,8 @@
-"""
-Exact replication of SpectralConv2d from the official PNO repository.
-Source: ExistentialRobotics/PNO - examples/models/spectralLayer.py
-
-No norm, torch.rand init, scale = 1 / (in_channels * out_channels).
-"""
-
 import torch
 import torch.nn as nn
 
 
 class SpectralConv2d(nn.Module):
-    """2D Fourier layer: FFT → linear transform on low-freq modes → IFFT."""
-
     def __init__(self, in_channels, out_channels, modes1, modes2):
         super().__init__()
         self.in_channels = in_channels
@@ -19,7 +10,6 @@ class SpectralConv2d(nn.Module):
         self.modes1 = modes1
         self.modes2 = modes2
 
-        # Official init: uniform rand, not randn
         self.scale = 1 / (in_channels * out_channels)
         self.weights1 = nn.Parameter(
             self.scale * torch.rand(
@@ -35,13 +25,11 @@ class SpectralConv2d(nn.Module):
         )
 
     def compl_mul2d(self, input, weights):
-        # (batch, in_ch, x, y), (in_ch, out_ch, x, y) -> (batch, out_ch, x, y)
         return torch.einsum("bixy,ioxy->boxy", input, weights)
 
     def forward(self, x):
         batchsize = x.shape[0]
 
-        # No norm kwarg — matches official code exactly
         x_ft = torch.fft.rfft2(x)
 
         out_ft = torch.zeros(
@@ -60,12 +48,6 @@ class SpectralConv2d(nn.Module):
 
 
 class DepthwiseSpectralConv2d(nn.Module):
-    """Depthwise 2D Fourier layer — per-channel frequency filtering.
-    
-    Params per layer: 2 × channels × modes1 × modes2  (vs. 2 × C² × M² for full).
-    The 1×1 Conv2d (W layer) in the FNO handles all cross-channel mixing.
-    """
-
     def __init__(self, channels, modes1, modes2):
         super().__init__()
         self.channels = channels
@@ -89,7 +71,6 @@ class DepthwiseSpectralConv2d(nn.Module):
             dtype=torch.cfloat, device=x.device
         )
 
-        # Element-wise multiply: each channel gets its own filter
         out_ft[:, :, :self.modes1, :self.modes2] = \
             x_ft[:, :, :self.modes1, :self.modes2] * self.weights1
         out_ft[:, :, -self.modes1:, :self.modes2] = \

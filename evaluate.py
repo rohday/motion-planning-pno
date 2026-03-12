@@ -1,15 +1,5 @@
 #!/usr/bin/env python3
-"""
-Evaluate a trained FNO2dMultiGoal on all available datasets.
-
-Auto-detects model architecture from model_config.json saved by train_fno.py.
-Evaluates on all data_*/ directories under --data_root.
-Saves per-dataset eval_result_*.png and a combined eval_stats.txt.
-
-Usage:
-    python evaluate.py --checkpoint checkpoints/fno/model_best.ckpt
-    python evaluate.py --checkpoint checkpoints/fno_m8w28d2/model_best.ckpt
-"""
+# cli: python evaluate.py [--checkpoint] [--data_root] [--output_dir] [--smooth_coef] [--batch_size] [--max_samples] [--num_samples] [--split] [--modes] [--width] [--depth] [--padding] [--depthwise]
 
 import argparse
 import json
@@ -28,11 +18,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from src.fno.fno2d import FNO2dMultiGoal
 from data.loader import PNODataset
 
-
-# ---------------------------------------------------------------------------
-# Loss
-# ---------------------------------------------------------------------------
-
 class LpLoss:
     def __init__(self, p=2):
         self.p = p
@@ -41,37 +26,23 @@ class LpLoss:
         n = x.size(0)
         diff = torch.norm(x.reshape(n, -1) - y.reshape(n, -1), self.p, dim=1)
         base = torch.norm(y.reshape(n, -1), self.p, dim=1)
-        return diff / (base + 1e-12)  # per-sample losses
-
-
-# ---------------------------------------------------------------------------
-# Load model from checkpoint + auto-detect config
-# ---------------------------------------------------------------------------
+        return diff / (base + 1e-12)
 
 def load_model(checkpoint_path, device, cli_args=None):
-    """
-    Load FNO model. Infers architecture from the checkpoint state_dict shapes.
-    """
     state = torch.load(checkpoint_path, map_location=device, weights_only=True)
 
-    # Infer config from weight shapes
     width = state['fc0.weight'].shape[0]
 
-    # Count layers: conv0, conv1, conv2, ...
-    num_layers = sum(1 for k in state if k.startswith('conv') and k.endswith('.weights1'))
+    depth = sum(1 for k in state if k.startswith('conv') and k.endswith('.weights1'))
 
-    # Detect depthwise vs full from conv0.weights1 shape
     w1_shape = state['conv0.weights1'].shape
     if len(w1_shape) == 3:
-        # (channels, modes1, modes2) → depthwise
         depthwise = True
         modes = w1_shape[1]
     else:
-        # (in_ch, out_ch, modes1, modes2) → full
         depthwise = False
         modes = w1_shape[2]
 
-    # Padding: try model_config.json, else default
     ckpt_dir = Path(checkpoint_path).parent
     config_path = ckpt_dir / 'model_config.json'
     padding = 9
@@ -81,16 +52,16 @@ def load_model(checkpoint_path, device, cli_args=None):
 
     cfg = {
         'modes': modes, 'width': width,
-        'num_layers': num_layers, 'padding': padding,
+        'depth': depth, 'padding': padding,
         'depthwise': depthwise,
     }
 
     dw_str = ' (depthwise)' if depthwise else ''
     print(f"Inferred config: modes={modes}, width={width}, "
-          f"layers={num_layers}{dw_str}")
+          f"layers={depth}{dw_str}")
 
     model = FNO2dMultiGoal(
-        num_layers=num_layers,
+        depth=depth,
         padding=padding,
         modes1=modes,
         modes2=modes,
@@ -106,14 +77,8 @@ def load_model(checkpoint_path, device, cli_args=None):
 
     return model, cfg
 
-
-# ---------------------------------------------------------------------------
-# Single-dataset evaluation
-# ---------------------------------------------------------------------------
-
 def evaluate_dataset(model, data_dir, device, smooth_coef=5.0,
                      max_samples=None, batch_size=20, split='val'):
-    """Evaluate on a specific split (train/val/test) using 80/10/10 ratio."""
     full_ds = PNODataset(data_dir, smooth_coef=smooth_coef, max_samples=max_samples)
     N = len(full_ds)
     n_train = int(N * 0.8)
@@ -125,7 +90,7 @@ def evaluate_dataset(model, data_dir, device, smooth_coef=5.0,
         indices = range(n_train, n_train + n_val)
     elif split == 'test':
         indices = range(n_train + n_val, N)
-    else:  # 'all'
+    else:
         indices = range(N)
 
     ds = torch.utils.data.Subset(full_ds, indices)
@@ -162,11 +127,6 @@ def evaluate_dataset(model, data_dir, device, smooth_coef=5.0,
         'mean_loss': torch.cat(all_losses).mean().item(),
         'resolution': torch.cat(all_chi).shape[1],
     }
-
-
-# ---------------------------------------------------------------------------
-# Visualization
-# ---------------------------------------------------------------------------
 
 def plot_samples(results, title, save_path, num_samples=4):
     n = min(num_samples, len(results['preds']))
@@ -214,18 +174,12 @@ def plot_samples(results, title, save_path, num_samples=4):
     plt.close(fig)
     print(f"  Saved plot: {save_path}")
 
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
 def main(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}\n")
 
     model, cfg = load_model(args.checkpoint, device, cli_args=args)
 
-    # Find all datasets
     data_root = Path(args.data_root)
     data_dirs = sorted([d for d in data_root.iterdir()
                         if d.is_dir() and d.name.startswith('data_')])
@@ -237,7 +191,6 @@ def main(args):
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Evaluate each dataset
     all_stats = []
     for data_dir in data_dirs:
         res_name = data_dir.name
@@ -272,12 +225,11 @@ def main(args):
         plot_samples(results, f'FNO @ {res}x{res}', plot_path,
                      num_samples=args.num_samples)
 
-    # Write combined eval_stats.txt
     stats_path = out_dir / 'eval_stats.txt'
     lines = [
         f"Checkpoint: {args.checkpoint}",
         f"Model:      modes={cfg['modes']}, width={cfg['width']}, "
-        f"layers={cfg['num_layers']}, depthwise={cfg.get('depthwise', False)}",
+        f"layers={cfg['depth']}, depthwise={cfg.get('depthwise', False)}",
         f"Params:     {sum(p.numel() for p in model.parameters()):,}",
         "",
         f"{'Dataset':<20} {'Resolution':>10} {'L2 Loss':>10} {'Accuracy':>10} {'Samples':>8}",
@@ -292,7 +244,6 @@ def main(args):
         f.write('\n'.join(lines) + '\n')
     print(f"\nSaved stats: {stats_path}")
 
-    # Print summary
     print("\nSUMMARY")
     for s in all_stats:
         print(f"  {s['dataset']:20s}  L2={s['mean_l2']:.5f}  ({s['accuracy_pct']:.2f}%)")
@@ -312,10 +263,9 @@ if __name__ == '__main__':
                         choices=['train', 'val', 'test', 'all'],
                         help='Which split to evaluate (80/10/10)')
 
-    # Fallback model args (only used if model_config.json not found)
     parser.add_argument('--modes',       type=int, default=12)
     parser.add_argument('--width',       type=int, default=32)
-    parser.add_argument('--num_layers',  type=int, default=4)
+    parser.add_argument('--depth',  type=int, default=4)
     parser.add_argument('--padding',     type=int, default=9)
     parser.add_argument('--depthwise',   action='store_true')
 
