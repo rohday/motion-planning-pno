@@ -21,20 +21,21 @@ except ImportError:
         print("  pip install pykonal   OR   pip install scikit-fmm")
         sys.exit(1)
 
-def generate_random_obstacles(size, min_free_ratio=0.55, max_free_ratio=0.85):
+def generate_random_obstacles(size, min_free_ratio=0.65, max_free_ratio=0.73):
+    """Generate random obstacle masks with controlled free-space ratio."""
     from scipy.ndimage import gaussian_filter, label
 
     while True:
         noise = np.random.randn(size, size)
-        sigma = np.random.uniform(1.5, 3.5)
+        sigma = np.random.uniform(1.8, 3.0)
         smooth = gaussian_filter(noise, sigma=sigma)
-        threshold = np.random.uniform(-0.3, 0.3)
+        threshold = np.random.uniform(-0.2, 0.2)
         mask = (smooth > threshold).astype(np.float64)
 
-        mask[0, :] = 1
-        mask[-1, :] = 1
-        mask[:, 0] = 1
-        mask[:, -1] = 1
+        mask[0, :] = 0
+        mask[-1, :] = 0
+        mask[:, 0] = 0
+        mask[:, -1] = 0
 
         free_ratio = np.mean(mask)
         if min_free_ratio <= free_ratio <= max_free_ratio:
