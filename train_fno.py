@@ -1,42 +1,38 @@
 #!/usr/bin/env python3
-# cli: python train_fno.py [--data] [--smooth_coef] [--modes] [--width] [--depth] [--padding] [--depthwise/--no-depthwise] [--epochs] [--batch_size] [--learning_rate] [--weight_decay] [--scheduler_step] [--scheduler_gamma] [--early_stop] [--checkevery] [--num_workers] [--output_dir]
+# cli: python train_fno.py [--data] [--modes] [--width] [--depth] [--padding] [--depthwise/--no-depthwise] [--epochs] [--batch_size] [--learning_rate] [--weight_decay] [--scheduler_step] [--scheduler_gamma] [--early_stop] [--checkevery] [--num_workers] [--output_dir]
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 from timeit import default_timer
 
 import numpy as np
 import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
+import torch.nn.functional as F
+from torch.utils.data import DataLoader, random_split
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from src.fno.fno2d import FNO2dMultiGoal
-from data.loader import PNODataset
+from src.fno.fno2d import FNO2dSDF
+from data.loader import SDFDataset
 
-class LpLoss:
-    def __init__(self, p=2, size_average=False):
-        self.p = p
-        self.size_average = size_average
+def evaluate_l2(model, loader, device):
+    model.eval()
+    total_l2 = 0.0
+    n = 0
 
-    def rel(self, x, y):
-        n = x.size(0)
-        diff = torch.norm(x.reshape(n, -1) - y.reshape(n, -1), self.p, dim=1)
-        base = torch.norm(y.reshape(n, -1), self.p, dim=1)
-        loss = (diff / (base + 1e-12)).sum()
-        if self.size_average:
-            loss = loss / n
-        return loss
+    with torch.no_grad():
+        for x, y in loader:
+            x = x.to(device)
+            y = y.to(device)
+            pred = model(x)
+            loss = F.mse_loss(pred, y, reduction='mean')
+            bs = x.shape[0]
+            total_l2 += loss.item() * bs
+            n += bs
 
-    def __call__(self, x, y):
-        return self.rel(x, y)
-
-def lr_schedule(base_lr, step, scheduler_step, scheduler_gamma):
-    return base_lr * (scheduler_gamma ** (step // scheduler_step))
+    return total_l2 / max(1, n)
 
 def train(args):
     if args.checkevery < 1:
@@ -48,21 +44,22 @@ def train(args):
     else:
         print(f">> Device: {device}")
 
-    print("Loading data...")
+    print("Loading SDF dataset...")
     t1 = default_timer()
 
-    full_ds = PNODataset(
-        args.data,
-        smooth_coef=args.smooth_coef,
+    full_ds = SDFDataset(
+        data_dir=args.data,
+        max_samples=args.max_samples,
+        normalize_input=not args.no_normalize_input,
+        normalize_target=not args.no_normalize_target,
     )
-    N = len(full_ds)
-    n_train = int(N * 0.8)
-    n_val   = int(N * 0.1)
-    n_test  = N - n_train - n_val
+    n_total = len(full_ds)
+    n_train = int(n_total * 0.8)
+    n_val = int(n_total * 0.1)
+    n_test = n_total - n_train - n_val
 
-    train_ds = torch.utils.data.Subset(full_ds, range(0, n_train))
-    val_ds   = torch.utils.data.Subset(full_ds, range(n_train, n_train + n_val))
-    test_ds  = torch.utils.data.Subset(full_ds, range(n_train + n_val, N))
+    gen = torch.Generator().manual_seed(args.seed)
+    train_ds, val_ds, test_ds = random_split(full_ds, [n_train, n_val, n_test], generator=gen)
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
                               num_workers=args.num_workers,
@@ -75,11 +72,11 @@ def train(args):
                               pin_memory=torch.cuda.is_available())
 
     t2 = default_timer()
-    H = full_ds.chi.shape[1]
-    print(f">> Preprocessing done in {t2-t1:.2f}s  |  resolution: {H}×{H}")
-    print(f">> Train: {n_train}  |  Val: {n_val}  |  Test: {n_test}  (80/10/10)")
+    h, w = full_ds.x.shape[-2], full_ds.x.shape[-1]
+    print(f">> Data ready in {t2-t1:.2f}s  |  resolution: {h}x{w}")
+    print(f">> Train: {n_train}  |  Val: {n_val}  |  Test: {n_test}")
 
-    model = FNO2dMultiGoal(
+    model = FNO2dSDF(
         modes1=args.modes,
         modes2=args.modes,
         width=args.width,
@@ -98,126 +95,110 @@ def train(args):
         lr=args.learning_rate,
         weight_decay=args.weight_decay,
     )
-    loss_fn = LpLoss(size_average=False)
+    scheduler = torch.optim.lr_scheduler.StepLR(
+        optimizer,
+        step_size=args.scheduler_step,
+        gamma=args.scheduler_gamma,
+    )
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     model_path = out_dir / 'model_best.ckpt'
 
-    best_train_loss = float('inf')
-    best_val_loss   = float('inf')
+    best_val_loss = float('inf')
     best_epoch = 0
     early_stop = 0
 
     train_log, val_log, test_log = [], [], []
 
-    def eval_loader(loader, n_samples):
-        model.eval()
-        l2 = 0.0
-        with torch.no_grad():
-            for chi, mask, y, goals in loader:
-                chi, mask, y, goals = (chi.to(device), mask.to(device),
-                                       y.to(device), goals.to(device))
-                out = model(chi, goals)
-                out_m = out * mask
-                y_m   = y   * mask
-                l2 += loss_fn(out_m, y_m).item()
-        return l2 / n_samples
-
     print("-" * 80)
     for ep in range(args.epochs):
         t1 = default_timer()
 
-        current_lr = lr_schedule(args.learning_rate, ep, args.scheduler_step, args.scheduler_gamma)
-        for pg in optimizer.param_groups:
-            pg['lr'] = current_lr
-
         model.train()
-        train_l2 = 0.0
-        for chi, mask, y, goals in train_loader:
-            chi, mask, y, goals = (chi.to(device), mask.to(device),
-                                   y.to(device), goals.to(device))
+        total_l2 = 0.0
+        n_seen = 0
+        for x, y in train_loader:
+            x = x.to(device)
+            y = y.to(device)
 
-            optimizer.zero_grad()
-            out = model(chi, goals)
-
-            out_m = out * mask
-            y_m   = y   * mask
-
-            loss = loss_fn(out_m, y_m)
+            optimizer.zero_grad(set_to_none=True)
+            out = model(x)
+            loss = F.mse_loss(out, y, reduction='mean')
             loss.backward()
             optimizer.step()
-            train_l2 += loss.item()
+            bs = x.shape[0]
+            total_l2 += loss.item() * bs
+            n_seen += bs
 
-        train_l2 /= n_train
+        scheduler.step()
+
+        train_l2 = total_l2 / max(1, n_seen)
+        val_l2 = evaluate_l2(model, val_loader, device)
         train_log.append([ep, train_l2])
+        val_log.append([ep, val_l2])
 
         t2 = default_timer()
 
-        if train_l2 < best_train_loss:
-            val_l2 = eval_loader(val_loader, n_val)
-            val_log.append([ep, val_l2])
-
-            if val_l2 < best_val_loss:
-                early_stop = 0
-                best_train_loss = train_l2
-                best_val_loss   = val_l2
-                best_epoch = ep
-                torch.save(model.state_dict(), model_path)
-                config = {
-                    'modes': args.modes, 'width': args.width,
-                    'depth': args.depth, 'padding': args.padding,
-                    'depthwise': args.depthwise,
-                }
-                with open(out_dir / 'model_config.json', 'w') as f:
-                    json.dump(config, f, indent=2)
-                print(f">> ep [{ep+1:>{len(str(args.epochs))}d}/{args.epochs}] "
-                      f"runtime: {t2-t1:.2f}s  "
-                      f"train: {train_l2:.5f}  val: {val_l2:.5f}  ← best")
-            else:
-                early_stop += 1
-                print(f">> ep [{ep+1:>{len(str(args.epochs))}d}/{args.epochs}](best:{best_epoch+1}) "
-                      f"runtime: {t2-t1:.2f}s  "
-                      f"train: {train_l2:.5f}  "
-                      f"(best train/val: {best_train_loss:.5f}/{best_val_loss:.5f})")
+        if val_l2 < best_val_loss:
+            early_stop = 0
+            best_val_loss = val_l2
+            best_epoch = ep
+            torch.save(model.state_dict(), model_path)
+            config = {
+                'task': 'geometry_to_sdf',
+                'input': 'mask.npy',
+                'target': 'dist_in.npy',
+                'modes': args.modes,
+                'width': args.width,
+                'depth': args.depth,
+                'padding': args.padding,
+                'depthwise': args.depthwise,
+                'normalization': full_ds.norm,
+            }
+            with open(out_dir / 'model_config.json', 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=2)
+            print(f">> ep [{ep+1:>{len(str(args.epochs))}d}/{args.epochs}] "
+                  f"runtime: {t2-t1:.2f}s  "
+                  f"train_l2: {train_l2:.6f}  val_l2: {val_l2:.6f}  <- best")
         else:
             early_stop += 1
             print(f">> ep [{ep+1:>{len(str(args.epochs))}d}/{args.epochs}](best:{best_epoch+1}) "
                   f"runtime: {t2-t1:.2f}s  "
-                  f"train: {train_l2:.5f}  "
-                  f"(best train/val: {best_train_loss:.5f}/{best_val_loss:.5f})")
+                  f"train_l2: {train_l2:.6f}  val_l2: {val_l2:.6f}")
 
         if (ep + 1) % args.checkevery == 0:
-            test_l2_ep = eval_loader(test_loader, n_test)
+            test_l2_ep = evaluate_l2(model, test_loader, device)
             test_log.append([ep, test_l2_ep])
             print(f">> ep [{ep+1:>{len(str(args.epochs))}d}/{args.epochs}] "
-                  f"periodic test: {test_l2_ep:.5f}")
+                f"periodic test_l2: {test_l2_ep:.6f}")
 
         if args.early_stop > 0 and early_stop > args.early_stop:
             print(f"Early stopping at epoch {ep+1}")
             break
 
     model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
-    test_l2 = eval_loader(test_loader, n_test)
+    test_l2 = evaluate_l2(model, test_loader, device)
 
     np.savetxt(str(out_dir / 'loss_train.txt'), train_log)
     np.savetxt(str(out_dir / 'loss_val.txt'),   val_log)
     np.savetxt(str(out_dir / 'loss_test.txt'),  test_log)
 
     print("-" * 80)
-    print(f">> Best train loss: {best_train_loss:.5f}")
-    print(f">> Best val loss:   {best_val_loss:.5f}")
-    print(f">> Test loss:       {test_l2:.5f}  (held-out)")
+    print(f">> Best val MSE:    {best_val_loss:.6f}")
+    print(f">> Test MSE:        {test_l2:.6f}  (held-out)")
     print(f">> Best epoch:      {best_epoch + 1}")
     print(f">> Model saved to:  {model_path}")
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Train FNO2dMultiGoal (official PNO replication)")
+    parser = argparse.ArgumentParser(description="Train FNO as geometry->SDF mapper")
 
     parser.add_argument('--data',        type=str, default='data/data_64x64',
-                        help="Dir with mask.npy, dist_in.npy, output.npy, goal.npy")
-    parser.add_argument('--smooth_coef', type=float, default=5.0,
-                        help="Smooth chi coefficient (paper uses 5.0)")
+                        help="Dir with mask.npy and dist_in.npy")
+    parser.add_argument('--max_samples', type=int, default=None)
+    parser.add_argument('--no-normalize-input', action='store_true')
+    parser.add_argument('--no-normalize-target', action='store_true')
+    parser.add_argument('--seed', type=int, default=42)
 
     parser.add_argument('--modes',       type=int, default=12)
     parser.add_argument('--width',       type=int, default=32)
@@ -231,28 +212,15 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size',      type=int,   default=64)
     parser.add_argument('--learning_rate',   type=float, default=5e-3)
     parser.add_argument('--weight_decay',    type=float, default=3e-6)
-    parser.add_argument('--scheduler_step',  type=int,   default=100)
-    parser.add_argument('--scheduler_gamma', type=float, default=0.5)
+    parser.add_argument('--scheduler_step',  type=int,   default=20)
+    parser.add_argument('--scheduler_gamma', type=float, default=0.7)
     parser.add_argument('--early_stop',      type=int,   default=100,
                         help="Stop if no improvement for N evals (0=disabled)")
     parser.add_argument('--checkevery',      type=int,   default=10,
                         help="Check test loss every N epochs (default: 10)")
     parser.add_argument('--num_workers',     type=int,   default=0)
 
-    parser.add_argument('--output_dir',  type=str, default='checkpoints/fno')
+    parser.add_argument('--output_dir',  type=str, default='checkpoints/fno_sdf')
 
     args = parser.parse_args()
     train(args)
-
-    print("\n" + "=" * 80)
-    print("Running evaluation on val split...")
-    print("=" * 80 + "\n")
-    import subprocess
-    eval_cmd = [
-        sys.executable, 'evaluate.py',
-        '--checkpoint', str(Path(args.output_dir) / 'model_best.ckpt'),
-        '--data_root', str(Path(args.data).parent),
-        '--split', 'val',
-        '--smooth_coef', str(args.smooth_coef),
-    ]
-    subprocess.run(eval_cmd)

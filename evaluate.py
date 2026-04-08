@@ -1,38 +1,33 @@
 #!/usr/bin/env python3
-# cli: python evaluate.py [--checkpoint] [--data_root] [--output_dir] [--smooth_coef] [--batch_size] [--max_samples] [--num_samples] [--split] [--modes] [--width] [--depth] [--padding] [--depthwise]
+# cli: python evaluate.py [--checkpoint] [--data_dir] [--output_dir] [--batch_size] [--max_samples] [--num_samples] [--split]
 
 import argparse
+import glob
 import json
-import os
-import sys
 from pathlib import Path
 
-import numpy as np
-import torch
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+import numpy as np
+import torch
+from torch.utils.data import DataLoader, TensorDataset
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+from src.fno.fno2d import FNO2dMultiGoal, FNO2dSDF
 
-from src.fno.fno2d import FNO2dMultiGoal
-from data.loader import PNODataset
 
-class LpLoss:
-    def __init__(self, p=2):
-        self.p = p
+def _find_file(data_dir: str, base_name: str) -> str:
+    exact = Path(data_dir) / f"{base_name}.npy"
+    if exact.exists():
+        return str(exact)
+    matches = glob.glob(str(Path(data_dir) / f"{base_name}*.npy"))
+    if matches:
+        return matches[0]
+    raise FileNotFoundError(f"Cannot find {base_name}*.npy in {data_dir}")
 
-    def __call__(self, x, y):
-        n = x.size(0)
-        diff = torch.norm(x.reshape(n, -1) - y.reshape(n, -1), self.p, dim=1)
-        base = torch.norm(y.reshape(n, -1), self.p, dim=1)
-        return diff / (base + 1e-12)
 
-def load_model(checkpoint_path, device, cli_args=None):
-    state = torch.load(checkpoint_path, map_location=device, weights_only=True)
-
+def _infer_model_config(state: dict, checkpoint_path: str):
     width = state['fc0.weight'].shape[0]
-
     depth = sum(1 for k in state if k.startswith('conv') and k.endswith('.weights1'))
 
     w1_shape = state['conv0.weights1'].shape
@@ -43,31 +38,64 @@ def load_model(checkpoint_path, device, cli_args=None):
         depthwise = False
         modes = w1_shape[2]
 
-    ckpt_dir = Path(checkpoint_path).parent
-    config_path = ckpt_dir / 'model_config.json'
-    padding = 9
-    if config_path.exists():
-        with open(config_path) as f:
-            padding = json.load(f).get('padding', 9)
-
     cfg = {
-        'modes': modes, 'width': width,
-        'depth': depth, 'padding': padding,
-        'depthwise': depthwise,
+        'task': 'legacy_multigoal',
+        'modes': int(modes),
+        'width': int(width),
+        'depth': int(depth),
+        'padding': 9,
+        'depthwise': bool(depthwise),
+        'normalization': {
+            'x_mean': 0.0,
+            'x_std': 1.0,
+            'y_mean': 0.0,
+            'y_std': 1.0,
+            'normalize_input': False,
+            'normalize_target': False,
+        },
     }
 
-    dw_str = ' (depthwise)' if depthwise else ''
-    print(f"Inferred config: modes={modes}, width={width}, "
-          f"layers={depth}{dw_str}")
+    config_path = Path(checkpoint_path).parent / 'model_config.json'
+    if config_path.exists():
+        with open(config_path, 'r', encoding='utf-8') as f:
+            saved = json.load(f)
+        cfg['padding'] = int(saved.get('padding', cfg['padding']))
+        cfg['depthwise'] = bool(saved.get('depthwise', cfg['depthwise']))
+        cfg['task'] = str(saved.get('task', cfg['task']))
+        if 'normalization' in saved:
+            cfg['normalization'].update(saved['normalization'])
 
-    model = FNO2dMultiGoal(
-        depth=depth,
-        padding=padding,
-        modes1=modes,
-        modes2=modes,
-        width=width,
-        depthwise=depthwise,
-    ).to(device)
+    return cfg
+
+
+def load_model(checkpoint_path, device, cli_args=None):
+    state = torch.load(checkpoint_path, map_location=device, weights_only=True)
+    cfg = _infer_model_config(state, checkpoint_path)
+
+    dw_str = ' (depthwise)' if cfg['depthwise'] else ''
+    print(
+        f"Inferred config: modes={cfg['modes']}, width={cfg['width']}, "
+        f"layers={cfg['depth']}{dw_str}"
+    )
+
+    if cfg['task'] == 'geometry_to_sdf':
+        model = FNO2dSDF(
+            depth=cfg['depth'],
+            padding=cfg['padding'],
+            modes1=cfg['modes'],
+            modes2=cfg['modes'],
+            width=cfg['width'],
+            depthwise=cfg['depthwise'],
+        ).to(device)
+    else:
+        model = FNO2dMultiGoal(
+            depth=cfg['depth'],
+            padding=cfg['padding'],
+            modes1=cfg['modes'],
+            modes2=cfg['modes'],
+            width=cfg['width'],
+            depthwise=cfg['depthwise'],
+        ).to(device)
 
     model.load_state_dict(state)
     model.eval()
@@ -77,197 +105,228 @@ def load_model(checkpoint_path, device, cli_args=None):
 
     return model, cfg
 
-def evaluate_dataset(model, data_dir, device, smooth_coef=5.0,
-                     max_samples=None, batch_size=20, split='val'):
-    full_ds = PNODataset(data_dir, smooth_coef=smooth_coef, max_samples=max_samples)
-    N = len(full_ds)
-    n_train = int(N * 0.8)
-    n_val   = int(N * 0.1)
 
+def _split_indices(n: int, split: str):
+    n_train = int(n * 0.8)
+    n_val = int(n * 0.1)
     if split == 'train':
-        indices = range(0, n_train)
-    elif split == 'val':
-        indices = range(n_train, n_train + n_val)
-    elif split == 'test':
-        indices = range(n_train + n_val, N)
-    else:
-        indices = range(N)
+        return range(0, n_train)
+    if split == 'val':
+        return range(n_train, n_train + n_val)
+    if split == 'test':
+        return range(n_train + n_val, n)
+    return range(n)
 
-    ds = torch.utils.data.Subset(full_ds, indices)
-    print(f"  Split: {split}  ({len(ds)}/{N} samples)")
-    loader = torch.utils.data.DataLoader(ds, batch_size=batch_size, shuffle=False)
-    loss_fn = LpLoss()
 
-    all_losses, all_preds, all_chi, all_mask, all_y, all_goals = [], [], [], [], [], []
+def _normalize_input(x, norm_cfg):
+    x_mean = float(norm_cfg.get('x_mean', 0.0))
+    x_std = float(norm_cfg.get('x_std', 1.0))
+
+    do_x = bool(norm_cfg.get('normalize_input', False))
+
+    if do_x:
+        x = (x - x_mean) / max(x_std, 1e-6)
+    return x
+
+
+def _denormalize_pred(pred_norm, norm_cfg):
+    do_y = bool(norm_cfg.get('normalize_target', False))
+    if not do_y:
+        return pred_norm
+    y_mean = float(norm_cfg.get('y_mean', 0.0))
+    y_std = float(norm_cfg.get('y_std', 1.0))
+    return pred_norm * max(y_std, 1e-6) + y_mean
+
+
+def evaluate_dataset(model, data_dir, device, norm_cfg,
+                     max_samples=None, batch_size=32, split='val', train_resolution=64):
+    x_np = np.load(_find_file(data_dir, 'mask')).astype(np.float32)
+    y_np = np.load(_find_file(data_dir, 'dist_in')).astype(np.float32)
+
+    if max_samples is not None:
+        n = min(max_samples, len(x_np))
+        x_np = x_np[:n]
+        y_np = y_np[:n]
+
+    x = torch.from_numpy(x_np).unsqueeze(1)
+    y = torch.from_numpy(y_np).unsqueeze(1)
+
+    target_resolution = int(y.shape[-1])
+    scale_factor = float(target_resolution) / float(train_resolution)
+
+    idx = list(_split_indices(len(x), split))
+    x = x[idx]
+    y = y[idx]
+
+    x_norm = _normalize_input(x.clone(), norm_cfg)
+
+    ds = TensorDataset(x_norm, y)
+    loader = DataLoader(ds, batch_size=batch_size, shuffle=False)
+    print(f"  Split: {split}  ({len(ds)} samples)")
+
+    abs_sum = 0.0
+    sq_sum = 0.0
+    diff_sq_sum = 0.0
+    y_sq_sum = 0.0
+    count = 0
+
+    samples = {'x': [], 'pred': [], 'y': []}
 
     model.eval()
     with torch.no_grad():
-        for chi, mask, y, goals in loader:
-            chi, mask, y, goals = (chi.to(device), mask.to(device),
-                                   y.to(device), goals.to(device))
-            pred = model(chi, goals)
-            pred_m = pred * mask
-            y_m    = y    * mask
-            losses = loss_fn(pred_m, y_m)
+        for xb_norm, yb_raw in loader:
+            xb_norm = xb_norm.to(device)
+            yb_raw = yb_raw.to(device)
 
-            all_losses.append(losses.cpu())
-            all_preds.append(pred.cpu())
-            all_chi.append(chi.cpu())
-            all_mask.append(mask.cpu())
-            all_y.append(y.cpu())
-            all_goals.append(goals.cpu())
+            pred_norm = model(xb_norm)
+            pred_raw = _denormalize_pred(pred_norm, norm_cfg)
+            pred_raw = pred_raw * scale_factor
 
-    return {
-        'losses': torch.cat(all_losses),
-        'preds':  torch.cat(all_preds),
-        'chis':   torch.cat(all_chi),
-        'masks':  torch.cat(all_mask),
-        'ys':     torch.cat(all_y),
-        'goals':  torch.cat(all_goals),
-        'mean_loss': torch.cat(all_losses).mean().item(),
-        'resolution': torch.cat(all_chi).shape[1],
+            err = pred_raw - yb_raw
+            abs_sum += err.abs().sum().item()
+            sq_sum += err.pow(2).sum().item()
+            diff_sq_sum += err.pow(2).sum().item()
+            y_sq_sum += yb_raw.pow(2).sum().item()
+            count += yb_raw.numel()
+
+            if len(samples['x']) < 32:
+                samples['x'].append(xb_norm.cpu())
+                samples['pred'].append(pred_raw.cpu())
+                samples['y'].append(yb_raw.cpu())
+
+    mae = abs_sum / max(1, count)
+    rmse = (sq_sum / max(1, count)) ** 0.5
+    rel_l2 = (diff_sq_sum ** 0.5) / (y_sq_sum ** 0.5 + 1e-12)
+
+    out = {
+        'mae': mae,
+        'rmse': rmse,
+        'rel_l2': rel_l2,
+        'scale_factor': scale_factor,
+        'train_resolution': int(train_resolution),
+        'target_resolution': target_resolution,
+        'n_samples': len(ds),
+        'resolution': int(x.shape[-1]),
     }
 
-def plot_samples(results, title, save_path, num_samples=4):
-    n = min(num_samples, len(results['preds']))
-    fig, axes = plt.subplots(n, 3, figsize=(14, 4.2 * n))
+    if samples['x']:
+        out['samples'] = {
+            'x': torch.cat(samples['x'], dim=0),
+            'pred': torch.cat(samples['pred'], dim=0),
+            'y': torch.cat(samples['y'], dim=0),
+        }
+    return out
+
+
+def plot_samples(results, save_path, num_samples=4):
+    if 'samples' not in results:
+        return
+
+    x = results['samples']['x']
+    pred = results['samples']['pred']
+    y = results['samples']['y']
+
+    n = min(num_samples, len(pred))
+    fig, axes = plt.subplots(n, 4, figsize=(16, 4.0 * n))
     if n == 1:
         axes = axes[np.newaxis, :]
 
-    mean_loss = results['mean_loss']
+    for i in range(n):
+        x_np = x[i, 0].numpy()
+        p_np = pred[i, 0].numpy()
+        y_np = y[i, 0].numpy()
+        e_np = np.abs(p_np - y_np)
 
-    for row in range(n):
-        chi_np  = results['chis'][row, :, :, 0].numpy()
-        pred_np = results['preds'][row, :, :, 0].numpy()
-        y_np    = results['ys'][row, :, :, 0].numpy()
-        mask_np = results['masks'][row, :, :, 0].numpy()
-        goal    = results['goals'][row].numpy()
-        sample_loss = results['losses'][row].item()
-
-        pred_vis = np.where(mask_np > 0.5, pred_np, np.nan)
-        y_vis    = np.where(mask_np > 0.5, y_np, np.nan)
-        vmax = np.nanmax(y_vis) if not np.all(np.isnan(y_vis)) else 1.0
-
-        for col, (img, cmap, col_title) in enumerate([
-            (chi_np,   'viridis', 'Input chi'),
-            (pred_vis, 'plasma',  'Predicted'),
-            (y_vis,    'plasma',  'Ground Truth'),
-        ]):
-            ax = axes[row, col]
-            kwargs = dict(origin='lower', cmap=cmap)
-            if col > 0:
-                kwargs.update(vmin=0, vmax=vmax)
-            im = ax.imshow(img, **kwargs)
+        plots = [
+            (x_np, 'gray', 'Input mask (normalized)'),
+            (p_np, 'plasma', 'Pred SDF'),
+            (y_np, 'plasma', 'GT SDF'),
+            (e_np, 'magma', '|Error|'),
+        ]
+        for j, (img, cmap, title) in enumerate(plots):
+            ax = axes[i, j]
+            im = ax.imshow(img, origin='lower', cmap=cmap)
             plt.colorbar(im, ax=ax, shrink=0.75)
-            if row == 0:
-                ax.set_title(col_title, fontsize=11)
-            if col == 0:
-                ax.set_ylabel(f'#{row}  L2={sample_loss:.3f}', fontsize=9)
-            ax.plot(int(goal[1]), int(goal[0]), 'r*', markersize=8,
-                    markeredgecolor='white')
+            if i == 0:
+                ax.set_title(title, fontsize=10)
             ax.axis('off')
 
-    fig.suptitle(f'{title}\nL2 = {mean_loss:.5f}  |  Accuracy = {(1-mean_loss)*100:.2f}%',
-                 fontsize=13, y=1.02)
+    fig.suptitle(
+        f"SDF Eval | scale={results['scale_factor']:.3f} | MAE={results['mae']:.6f} | RMSE={results['rmse']:.6f} | relL2={results['rel_l2']:.6f}",
+        fontsize=13,
+        y=1.02,
+    )
     plt.tight_layout()
     plt.savefig(str(save_path), dpi=150, bbox_inches='tight')
     plt.close(fig)
-    print(f"  Saved plot: {save_path}")
+    print(f"Saved plot: {save_path}")
+
 
 def main(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}\n")
 
-    model, cfg = load_model(args.checkpoint, device, cli_args=args)
+    model, cfg = load_model(args.checkpoint, device)
 
-    data_root = Path(args.data_root)
-    data_dirs = sorted([d for d in data_root.iterdir()
-                        if d.is_dir() and d.name.startswith('data_')])
-
-    if not data_dirs:
-        print(f"No data_* directories found in {data_root}")
-        return
+    if cfg.get('task') != 'geometry_to_sdf':
+        raise ValueError(
+            f"Checkpoint task='{cfg.get('task')}' is not geometry_to_sdf. "
+            "Use an SDF-trained checkpoint from train_fno.py."
+        )
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    all_stats = []
-    for data_dir in data_dirs:
-        res_name = data_dir.name
-        print(f"\n{'='*60}")
-        print(f"Evaluating: {res_name}")
-        print(f"{'='*60}")
+    results = evaluate_dataset(
+        model=model,
+        data_dir=args.data_dir,
+        device=device,
+        norm_cfg=cfg.get('normalization', {}),
+        max_samples=args.max_samples,
+        batch_size=args.batch_size,
+        split=args.split,
+        train_resolution=args.train_resolution,
+    )
 
-        results = evaluate_dataset(
-            model, str(data_dir), device,
-            smooth_coef=args.smooth_coef,
-            max_samples=args.max_samples,
-            batch_size=args.batch_size,
-            split=args.split,
-        )
+    print(f"\nResolution: {results['resolution']}x{results['resolution']}")
+    print(f"Samples:    {results['n_samples']}")
+    print(f"Scale:      {results['target_resolution']}/{results['train_resolution']} = {results['scale_factor']:.6f}")
+    print(f"MAE:        {results['mae']:.8f}")
+    print(f"RMSE:       {results['rmse']:.8f}")
+    print(f"Rel L2:     {results['rel_l2']:.8f}")
 
-        res = results['resolution']
-        ml = results['mean_loss']
-        acc = (1 - ml) * 100
-        print(f"  Resolution: {res}x{res}")
-        print(f"  Mean L2:    {ml:.5f}")
-        print(f"  Accuracy:   {acc:.2f}%")
-
-        all_stats.append({
-            'dataset': res_name,
-            'resolution': res,
-            'mean_l2': ml,
-            'accuracy_pct': acc,
-            'n_samples': len(results['losses']),
-        })
-
-        plot_path = out_dir / f'eval_result_{res_name}.png'
-        plot_samples(results, f'FNO @ {res}x{res}', plot_path,
-                     num_samples=args.num_samples)
+    plot_samples(results, out_dir / 'eval_result_sdf.png', num_samples=args.num_samples)
 
     stats_path = out_dir / 'eval_stats.txt'
     lines = [
         f"Checkpoint: {args.checkpoint}",
-        f"Model:      modes={cfg['modes']}, width={cfg['width']}, "
-        f"layers={cfg['depth']}, depthwise={cfg.get('depthwise', False)}",
+        f"Data:       {args.data_dir}",
+        f"Split:      {args.split}",
+        f"Model:      modes={cfg['modes']}, width={cfg['width']}, layers={cfg['depth']}, depthwise={cfg['depthwise']}",
         f"Params:     {sum(p.numel() for p in model.parameters()):,}",
+        f"Scale:      {results['target_resolution']}/{results['train_resolution']} = {results['scale_factor']:.8f}",
         "",
-        f"{'Dataset':<20} {'Resolution':>10} {'L2 Loss':>10} {'Accuracy':>10} {'Samples':>8}",
+        f"MAE:        {results['mae']:.8f}",
+        f"RMSE:       {results['rmse']:.8f}",
+        f"RelativeL2: {results['rel_l2']:.8f}",
     ]
-    for s in all_stats:
-        lines.append(
-            f"{s['dataset']:<20} {s['resolution']:>10} "
-            f"{s['mean_l2']:>10.5f} {s['accuracy_pct']:>9.2f}% {s['n_samples']:>8}"
-        )
-
-    with open(stats_path, 'w') as f:
+    with open(stats_path, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines) + '\n')
-    print(f"\nSaved stats: {stats_path}")
-
-    print("\nSUMMARY")
-    for s in all_stats:
-        print(f"  {s['dataset']:20s}  L2={s['mean_l2']:.5f}  ({s['accuracy_pct']:.2f}%)")
+    print(f"Saved stats: {stats_path}")
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Evaluate FNO on all available datasets")
-    parser.add_argument('--checkpoint',  type=str, default='checkpoints/fno/model_best.ckpt')
-    parser.add_argument('--data_root',   type=str, default='data')
-    parser.add_argument('--output_dir',  type=str, default=None,
-                        help="Where to save results (default: same dir as checkpoint)")
-    parser.add_argument('--smooth_coef', type=float, default=5.0)
-    parser.add_argument('--batch_size',  type=int, default=20)
+    parser = argparse.ArgumentParser(description='Evaluate FNO geometry->SDF model')
+    parser.add_argument('--checkpoint', type=str, default='checkpoints/fno_sdf/model_best.ckpt')
+    parser.add_argument('--data_dir', type=str, default='data/data_64x64')
+    parser.add_argument('--output_dir', type=str, default=None,
+                        help='Where to save results (default: checkpoint directory)')
+    parser.add_argument('--batch_size', type=int, default=64)
+    parser.add_argument('--train_resolution', type=int, default=64,
+                        help='Resolution used during model training (for SDF scale correction).')
     parser.add_argument('--max_samples', type=int, default=None)
     parser.add_argument('--num_samples', type=int, default=4)
-    parser.add_argument('--split',       type=str, default='val',
-                        choices=['train', 'val', 'test', 'all'],
-                        help='Which split to evaluate (80/10/10)')
-
-    parser.add_argument('--modes',       type=int, default=12)
-    parser.add_argument('--width',       type=int, default=32)
-    parser.add_argument('--depth',  type=int, default=4)
-    parser.add_argument('--padding',     type=int, default=9)
-    parser.add_argument('--depthwise',   action='store_true')
+    parser.add_argument('--split', type=str, default='val', choices=['train', 'val', 'test', 'all'])
 
     args = parser.parse_args()
     if args.output_dir is None:
