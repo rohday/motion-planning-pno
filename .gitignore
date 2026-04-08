@@ -2,6 +2,7 @@
 data/
 
 # Model checkpoints
+.misc/
 checkpoints/
 .generic_checkpoints/
 *.ckpt
