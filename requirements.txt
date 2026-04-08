@@ -1,7 +1,0 @@
-torch>=2.0
-numpy
-scipy
-scikit-fmm
-matplotlib
-tqdm
-pyyaml

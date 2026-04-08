@@ -1,7 +1,0 @@
-Checkpoint: checkpoints/fno_m8w24d2/model_best.ckpt
-Model:      modes=8, width=24, layers=2, depthwise=False
-Params:     152,033
-
-Dataset              Resolution    L2 Loss   Accuracy  Samples
-data_256x256                256    0.64935     35.06%      100
-data_64x64                   64    0.05937     94.06%     1000
