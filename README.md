@@ -2,7 +2,7 @@
 
 ---
 
-## 📖 Overview
+## Overview
 
 The **Planning Neural Operator (PNO)** is a novel architecture designed to learn and compute optimal value functions (cost-to-go) from 2D obstacle environments to any specified goal position. The value function provides the shortest distance to reach a goal from every spatial location, effectively serving as an $\epsilon$-consistent heuristic for pathfinding algorithms like A*.
 
@@ -16,7 +16,7 @@ Traditional planning algorithms rely on discrete graph searches, while standard 
 
 ---
 
-## 🏗 System Architecture
+## System Architecture
 
 The pipeline consists of two primary models:
 
@@ -34,7 +34,7 @@ The PNO learns the Eikonal solution directly by jointly conditioning on three in
 
 ---
 
-## 📂 Repository Structure
+## Repository Structure
 
 ```
 motion-planning-pno/
@@ -54,7 +54,7 @@ motion-planning-pno/
 
 ---
 
-## 📈 Current Progress
+## Current Progress
 
 ### Phase 1: Repository Audit & Core Pipeline Assembly
 - **Architecture Validation**: Audited the existing PNO repository and aligned the codebase with efficient, hardware-agnostic design principles observed in reference implementations.
