@@ -1,9 +1,5 @@
 # Planning Neural Operator (PNO) for Motion Planning
 
-<div align="center">
-  <em>A fast, continuous, and generalizable neural operator framework for robotic motion planning</em>
-</div>
-
 ---
 
 ## 📖 Overview
@@ -44,7 +40,6 @@ The PNO learns the Eikonal solution directly by jointly conditioning on three in
 motion-planning-pno/
 ├── data/                      # Dataset arrays (.npy/.npz)
 ├── checkpoints/               # Trained model weights and configs
-├── documentation/             # LaTeX mathematical formulation and images
 ├── src/
 │   ├── fno/                   # FNO2dSDF model architecture
 │   ├── pno/                   # PNO, DAFNO blocks, and DeepNorm layers
