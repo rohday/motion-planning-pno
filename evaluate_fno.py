@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# cli: python evaluate.py [--checkpoint] [--data_dir] [--output_dir] [--batch_size] [--max_samples] [--num_samples] [--split]
+# cli: python evaluate_fno.py [--checkpoint] [--data_dir_glob] [--output_dir] [--batch_size] [--max_samples] [--num_samples] [--split]
 
 import argparse
 import glob
@@ -138,6 +138,15 @@ def _denormalize_pred(pred_norm, norm_cfg):
     return pred_norm * max(y_std, 1e-6) + y_mean
 
 
+def _normalize_target(y_raw, norm_cfg):
+    do_y = bool(norm_cfg.get('normalize_target', False))
+    if not do_y:
+        return y_raw
+    y_mean = float(norm_cfg.get('y_mean', 0.0))
+    y_std = float(norm_cfg.get('y_std', 1.0))
+    return (y_raw - y_mean) / max(y_std, 1e-6)
+
+
 def evaluate_dataset(model, data_dir, device, norm_cfg,
                      max_samples=None, batch_size=32, split='val', train_resolution=64):
     x_np = np.load(_find_file(data_dir, 'mask')).astype(np.float32)
@@ -168,6 +177,10 @@ def evaluate_dataset(model, data_dir, device, norm_cfg,
     sq_sum = 0.0
     diff_sq_sum = 0.0
     y_sq_sum = 0.0
+    abs_sum_norm = 0.0
+    sq_sum_norm = 0.0
+    diff_sq_sum_norm = 0.0
+    y_sq_sum_norm = 0.0
     count = 0
 
     samples = {'x': [], 'pred': [], 'y': []}
@@ -179,6 +192,14 @@ def evaluate_dataset(model, data_dir, device, norm_cfg,
             yb_raw = yb_raw.to(device)
 
             pred_norm = model(xb_norm)
+
+            yb_norm = _normalize_target(yb_raw, norm_cfg)
+            err_norm = pred_norm - yb_norm
+            abs_sum_norm += err_norm.abs().sum().item()
+            sq_sum_norm += err_norm.pow(2).sum().item()
+            diff_sq_sum_norm += err_norm.pow(2).sum().item()
+            y_sq_sum_norm += yb_norm.pow(2).sum().item()
+
             pred_raw = _denormalize_pred(pred_norm, norm_cfg)
             pred_raw = pred_raw * scale_factor
 
@@ -197,11 +218,17 @@ def evaluate_dataset(model, data_dir, device, norm_cfg,
     mae = abs_sum / max(1, count)
     rmse = (sq_sum / max(1, count)) ** 0.5
     rel_l2 = (diff_sq_sum ** 0.5) / (y_sq_sum ** 0.5 + 1e-12)
+    mae_norm = abs_sum_norm / max(1, count)
+    rmse_norm = (sq_sum_norm / max(1, count)) ** 0.5
+    rel_l2_norm = (diff_sq_sum_norm ** 0.5) / (y_sq_sum_norm ** 0.5 + 1e-12)
 
     out = {
         'mae': mae,
         'rmse': rmse,
         'rel_l2': rel_l2,
+        'mae_norm': mae_norm,
+        'rmse_norm': rmse_norm,
+        'rel_l2_norm': rel_l2_norm,
         'scale_factor': scale_factor,
         'train_resolution': int(train_resolution),
         'target_resolution': target_resolution,
@@ -277,48 +304,84 @@ def main(args):
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    results = evaluate_dataset(
-        model=model,
-        data_dir=args.data_dir,
-        device=device,
-        norm_cfg=cfg.get('normalization', {}),
-        max_samples=args.max_samples,
-        batch_size=args.batch_size,
-        split=args.split,
-        train_resolution=args.train_resolution,
-    )
+    data_dirs = sorted([p for p in glob.glob(args.data_dir_glob) if Path(p).is_dir()])
+    if not data_dirs:
+        raise FileNotFoundError(f"No datasets matched glob: {args.data_dir_glob}")
 
-    print(f"\nResolution: {results['resolution']}x{results['resolution']}")
-    print(f"Samples:    {results['n_samples']}")
-    print(f"Scale:      {results['target_resolution']}/{results['train_resolution']} = {results['scale_factor']:.6f}")
-    print(f"MAE:        {results['mae']:.8f}")
-    print(f"RMSE:       {results['rmse']:.8f}")
-    print(f"Rel L2:     {results['rel_l2']:.8f}")
+    all_rows = []
+    for data_dir in data_dirs:
+        results = evaluate_dataset(
+            model=model,
+            data_dir=data_dir,
+            device=device,
+            norm_cfg=cfg.get('normalization', {}),
+            max_samples=args.max_samples,
+            batch_size=args.batch_size,
+            split=args.split,
+            train_resolution=args.train_resolution,
+        )
 
-    plot_samples(results, out_dir / 'eval_result_sdf.png', num_samples=args.num_samples)
+        tag = Path(data_dir).name
+        print(f"\n[{tag}] Resolution: {results['resolution']}x{results['resolution']}")
+        print(f"[{tag}] Samples:    {results['n_samples']}")
+        print(f"[{tag}] Scale:      {results['target_resolution']}/{results['train_resolution']} = {results['scale_factor']:.6f}")
+        print(f"[{tag}] MAE:        {results['mae']:.8f}")
+        print(f"[{tag}] RMSE:       {results['rmse']:.8f}")
+        print(f"[{tag}] Rel L2:     {results['rel_l2']:.8f} (denorm/raw)")
+        print(f"[{tag}] Rel L2:     {results['rel_l2_norm']:.8f} (normalized)")
 
-    stats_path = out_dir / 'eval_stats.txt'
-    lines = [
-        f"Checkpoint: {args.checkpoint}",
-        f"Data:       {args.data_dir}",
-        f"Split:      {args.split}",
-        f"Model:      modes={cfg['modes']}, width={cfg['width']}, layers={cfg['depth']}, depthwise={cfg['depthwise']}",
-        f"Params:     {sum(p.numel() for p in model.parameters()):,}",
-        f"Scale:      {results['target_resolution']}/{results['train_resolution']} = {results['scale_factor']:.8f}",
-        "",
-        f"MAE:        {results['mae']:.8f}",
-        f"RMSE:       {results['rmse']:.8f}",
-        f"RelativeL2: {results['rel_l2']:.8f}",
-    ]
-    with open(stats_path, 'w', encoding='utf-8') as f:
-        f.write('\n'.join(lines) + '\n')
-    print(f"Saved stats: {stats_path}")
+        plot_samples(results, out_dir / f'eval_result_sdf_{tag}.png', num_samples=args.num_samples)
+
+        train_eval = evaluate_dataset(
+            model=model,
+            data_dir=data_dir,
+            device=device,
+            norm_cfg=cfg.get('normalization', {}),
+            max_samples=args.max_samples,
+            batch_size=args.batch_size,
+            split='train',
+            train_resolution=args.train_resolution,
+        )
+        test_eval = evaluate_dataset(
+            model=model,
+            data_dir=data_dir,
+            device=device,
+            norm_cfg=cfg.get('normalization', {}),
+            max_samples=args.max_samples,
+            batch_size=args.batch_size,
+            split='test',
+            train_resolution=args.train_resolution,
+        )
+        all_rows.append((
+            tag,
+            results['rel_l2'],
+            results['rel_l2_norm'],
+            train_eval['rel_l2'],
+            test_eval['rel_l2'],
+            train_eval['rel_l2_norm'],
+            test_eval['rel_l2_norm'],
+        ))
+
+    summary_path = out_dir / 'eval_stats_all_datasets.txt'
+    with open(summary_path, 'w', encoding='utf-8') as f:
+        f.write(f"Checkpoint: {args.checkpoint}\n")
+        f.write(f"Glob:       {args.data_dir_glob}\n\n")
+        for tag, eval_l2, eval_l2_norm, train_l2, test_l2, train_l2_norm, test_l2_norm in all_rows:
+            f.write(f"Dataset: {tag}\n")
+            f.write(f"Eval L2 error (denorm/raw): {eval_l2:.8f}\n")
+            f.write(f"Eval L2 error (normalized): {eval_l2_norm:.8f}\n")
+            f.write(f"Train L2 error (denorm/raw): {train_l2:.8f}\n")
+            f.write(f"Test L2 error  (denorm/raw): {test_l2:.8f}\n")
+            f.write(f"Train L2 error (normalized): {train_l2_norm:.8f}\n")
+            f.write(f"Test L2 error  (normalized): {test_l2_norm:.8f}\n\n")
+    print(f"Saved summary: {summary_path}")
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Evaluate FNO geometry->SDF model')
     parser.add_argument('--checkpoint', type=str, default='checkpoints/fno_sdf/model_best.ckpt')
-    parser.add_argument('--data_dir', type=str, default='data/data_64x64')
+    parser.add_argument('--data_dir_glob', type=str, default='data/data_*',
+                        help='Glob for datasets to evaluate, e.g. data/data_*')
     parser.add_argument('--output_dir', type=str, default=None,
                         help='Where to save results (default: checkpoint directory)')
     parser.add_argument('--batch_size', type=int, default=64)

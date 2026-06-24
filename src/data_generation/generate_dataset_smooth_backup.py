@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # cli: python -m src.data_generation.generate_dataset [--n_samples 10000] [--resolution 64] [--output_dir data/pno_10k] [--seed 42] [--workers 8] [--min_free_ratio 0.55] [--max_free_ratio 0.75]
 
-
 import argparse
 import multiprocessing as mp
 import os
@@ -11,59 +10,50 @@ from pathlib import Path
 import numpy as np
 import skfmm
 from scipy.ndimage import (
+    binary_closing,
     binary_opening,
     distance_transform_edt,
     gaussian_filter,
     label,
 )
 
+
 def generate_random_map(size, rng, min_free=0.55, max_free=0.75,
                         min_obstacle_px=20):
-    connectivity8 = np.ones((3, 3), dtype=bool)
     for _ in range(200):
-        # 1. Fine-grained noise — small sigma keeps blobs small and jagged.
+        # 1. Smoother base noise — larger sigma groups into bigger blobs.
         noise = rng.standard_normal((size, size))
-        sigma = rng.uniform(0.8, 1.6)
+        sigma = rng.uniform(2.0, 4.0)
         smooth = gaussian_filter(noise, sigma=sigma)
-        threshold = rng.uniform(-0.1, 0.4)
+        threshold = rng.uniform(-0.3, 0.3)
+        mask = (smooth > threshold)
 
-        mask = (smooth > threshold).astype(np.float64)
+        # Mild morphology to suppress single-pixel jaggedness before labeling.
+        structure = np.ones((3, 3), dtype=bool)
+        mask = binary_closing(mask, structure=structure)
+        mask = binary_opening(mask, structure=structure)
 
-        # 2. Light morphology — just remove single-pixel noise, keep jaggedness.
-        structure = np.ones((2, 2), dtype=bool)
-        mask_bool = binary_opening(mask.astype(bool), structure=structure)
-
-        # 3. Remove tiny obstacle specks but KEEP all free-space islands.
-        obstacle = ~mask_bool
-        obs_labeled, n_obs = label(obstacle, structure=connectivity8)
+        # 2. Remove small obstacle specks (obstacle = mask == 0).
+        obstacle = ~mask
+        obs_labeled, n_obs = label(obstacle)
         if n_obs > 0:
             obs_sizes = np.bincount(obs_labeled.ravel())
             for obs_id in range(1, len(obs_sizes)):
                 if obs_sizes[obs_id] < min_obstacle_px:
-                    mask_bool[obs_labeled == obs_id] = True
+                    mask[obs_labeled == obs_id] = True
 
-        # 4. Remove tiny free-space blobs (keep only blobs >= min_blob_px).
-        min_blob_px = 8
-        free_labeled, n_free = label(mask_bool, structure=connectivity8)
+        # 3. Keep only the largest free-space connected component.
+        free_labeled, n_free = label(mask)
         if n_free == 0:
             continue
         free_sizes = np.bincount(free_labeled.ravel())
-        clean_mask = np.zeros_like(mask_bool)
-        for fid in range(1, len(free_sizes)):
-            if free_sizes[fid] >= min_blob_px:
-                clean_mask[free_labeled == fid] = True
-
-        # 4b. Enforce one connected open-space region (8-connected).
-        free_labeled2, n_free2 = label(clean_mask, structure=connectivity8)
-        if n_free2 == 0:
+        if len(free_sizes) <= 1:
             continue
-        if n_free2 > 1:
-            free_sizes2 = np.bincount(free_labeled2.ravel())
-            largest_free_id = int(np.argmax(free_sizes2[1:]) + 1)
-            clean_mask = (free_labeled2 == largest_free_id)
+        largest_free_id = int(np.argmax(free_sizes[1:]) + 1)
+        mask = (free_labeled == largest_free_id)
 
-        # 5. Boundary walls.
-        mask = clean_mask.astype(np.float64)
+        # 4. Apply boundary walls last.
+        mask = mask.astype(np.float64)
         mask[0, :] = 0.0
         mask[-1, :] = 0.0
         mask[:, 0] = 0.0

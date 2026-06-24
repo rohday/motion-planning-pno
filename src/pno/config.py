@@ -9,4 +9,4 @@ class PNOConfig:
     depth: int = 4
     padding: int = 9
     beta: float = 5.0
-    deepnorm_hidden: int = 64
+    deepnorm_hidden: int = 128

@@ -1,0 +1,20 @@
+\contentsline {section}{\numberline {1}Problem Statement}{2}{section.1}%
+\contentsline {subsection}{\numberline {1.1}Objective}{2}{subsection.1.1}%
+\contentsline {subsection}{\numberline {1.2}Inputs}{2}{subsection.1.2}%
+\contentsline {subsection}{\numberline {1.3}Outputs}{2}{subsection.1.3}%
+\contentsline {subsection}{\numberline {1.4}Planning Extension}{2}{subsection.1.4}%
+\contentsline {section}{\numberline {2}Mathematical Formulation}{2}{section.2}%
+\contentsline {subsection}{\numberline {2.1}The Eikonal Partial Differential Equation}{2}{subsection.2.1}%
+\contentsline {subsection}{\numberline {2.2}Interpretation}{3}{subsection.2.2}%
+\contentsline {section}{\numberline {3}System Pipeline}{3}{section.3}%
+\contentsline {section}{\numberline {4}Model Architectures}{3}{section.4}%
+\contentsline {subsection}{\numberline {4.1}Phase 1: SDF-FNO (Geometry to Signed Distance Field)}{3}{subsection.4.1}%
+\contentsline {subsubsection}{\numberline {4.1.1}Motivation}{3}{subsubsection.4.1.1}%
+\contentsline {subsubsection}{\numberline {4.1.2}Architecture Specification}{3}{subsubsection.4.1.2}%
+\contentsline {subsection}{\numberline {4.2}Phase 2: Planning Neural Operator (PNO)}{4}{subsection.4.2}%
+\contentsline {subsubsection}{\numberline {4.2.1}Core Innovation}{4}{subsubsection.4.2.1}%
+\contentsline {subsubsection}{\numberline {4.2.2}Architecture Specification}{4}{subsubsection.4.2.2}%
+\contentsline {subsubsection}{\numberline {4.2.3}Input Construction}{4}{subsubsection.4.2.3}%
+\contentsline {subsubsection}{\numberline {4.2.4}Smoothed Indicator Function (SIFN) Mask}{4}{subsubsection.4.2.4}%
+\contentsline {subsubsection}{\numberline {4.2.5}DAFNO Blocks (Domain-Agnostic Fourier Neural Operator Blocks)}{4}{subsubsection.4.2.5}%
+\contentsline {subsubsection}{\numberline {4.2.6}DeepNorm Projection Head}{5}{subsubsection.4.2.6}%

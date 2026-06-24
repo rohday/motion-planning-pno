@@ -17,22 +17,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from src.fno.fno2d import FNO2dSDF
 from data.loader import SDFDataset
 
-def evaluate_l2(model, loader, device):
+def evaluate_rel_l2(model, loader, device):
     model.eval()
-    total_l2 = 0.0
-    n = 0
+    diff_sq_sum = 0.0
+    y_sq_sum = 0.0
 
     with torch.no_grad():
         for x, y in loader:
             x = x.to(device)
             y = y.to(device)
             pred = model(x)
-            loss = F.mse_loss(pred, y, reduction='mean')
-            bs = x.shape[0]
-            total_l2 += loss.item() * bs
-            n += bs
+            diff_sq_sum += (pred - y).pow(2).sum().item()
+            y_sq_sum += y.pow(2).sum().item()
 
-    return total_l2 / max(1, n)
+    return (diff_sq_sum ** 0.5) / (y_sq_sum ** 0.5 + 1e-12)
 
 def train(args):
     if args.checkevery < 1:
@@ -48,7 +46,7 @@ def train(args):
     t1 = default_timer()
 
     full_ds = SDFDataset(
-        data_dir=args.data,
+        data_dir=args.data_dir,
         max_samples=args.max_samples,
         normalize_input=not args.no_normalize_input,
         normalize_target=not args.no_normalize_target,
@@ -105,7 +103,7 @@ def train(args):
     out_dir.mkdir(parents=True, exist_ok=True)
     model_path = out_dir / 'model_best.ckpt'
 
-    best_val_loss = float('inf')
+    best_val_l2 = float('inf')
     best_epoch = 0
     early_stop = 0
 
@@ -116,7 +114,9 @@ def train(args):
         t1 = default_timer()
 
         model.train()
-        total_l2 = 0.0
+        total_mse = 0.0
+        diff_sq_sum = 0.0
+        y_sq_sum = 0.0
         n_seen = 0
         for x, y in train_loader:
             x = x.to(device)
@@ -128,21 +128,24 @@ def train(args):
             loss.backward()
             optimizer.step()
             bs = x.shape[0]
-            total_l2 += loss.item() * bs
+            total_mse += loss.item() * bs
+            diff_sq_sum += (out - y).pow(2).sum().item()
+            y_sq_sum += y.pow(2).sum().item()
             n_seen += bs
 
         scheduler.step()
 
-        train_l2 = total_l2 / max(1, n_seen)
-        val_l2 = evaluate_l2(model, val_loader, device)
+        train_mse = total_mse / max(1, n_seen)
+        train_l2 = (diff_sq_sum ** 0.5) / (y_sq_sum ** 0.5 + 1e-12)
+        val_l2 = evaluate_rel_l2(model, val_loader, device)
         train_log.append([ep, train_l2])
         val_log.append([ep, val_l2])
 
         t2 = default_timer()
 
-        if val_l2 < best_val_loss:
+        if val_l2 < best_val_l2:
             early_stop = 0
-            best_val_loss = val_l2
+            best_val_l2 = val_l2
             best_epoch = ep
             torch.save(model.state_dict(), model_path)
             config = {
@@ -160,15 +163,15 @@ def train(args):
                 json.dump(config, f, indent=2)
             print(f">> ep [{ep+1:>{len(str(args.epochs))}d}/{args.epochs}] "
                   f"runtime: {t2-t1:.2f}s  "
-                  f"train_l2: {train_l2:.6f}  val_l2: {val_l2:.6f}  <- best")
+                  f"train_l2: {train_l2:.6f}  val_l2: {val_l2:.6f}  train_mse: {train_mse:.6f}  <- best")
         else:
             early_stop += 1
             print(f">> ep [{ep+1:>{len(str(args.epochs))}d}/{args.epochs}](best:{best_epoch+1}) "
                   f"runtime: {t2-t1:.2f}s  "
-                  f"train_l2: {train_l2:.6f}  val_l2: {val_l2:.6f}")
+                  f"train_l2: {train_l2:.6f}  val_l2: {val_l2:.6f}  train_mse: {train_mse:.6f}")
 
         if (ep + 1) % args.checkevery == 0:
-            test_l2_ep = evaluate_l2(model, test_loader, device)
+            test_l2_ep = evaluate_rel_l2(model, test_loader, device)
             test_log.append([ep, test_l2_ep])
             print(f">> ep [{ep+1:>{len(str(args.epochs))}d}/{args.epochs}] "
                 f"periodic test_l2: {test_l2_ep:.6f}")
@@ -178,22 +181,22 @@ def train(args):
             break
 
     model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
-    test_l2 = evaluate_l2(model, test_loader, device)
+    test_l2 = evaluate_rel_l2(model, test_loader, device)
 
     np.savetxt(str(out_dir / 'loss_train.txt'), train_log)
     np.savetxt(str(out_dir / 'loss_val.txt'),   val_log)
     np.savetxt(str(out_dir / 'loss_test.txt'),  test_log)
 
     print("-" * 80)
-    print(f">> Best val MSE:    {best_val_loss:.6f}")
-    print(f">> Test MSE:        {test_l2:.6f}  (held-out)")
+    print(f">> Best val L2:     {best_val_l2:.6f}")
+    print(f">> Test L2:         {test_l2:.6f}  (held-out)")
     print(f">> Best epoch:      {best_epoch + 1}")
     print(f">> Model saved to:  {model_path}")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Train FNO as geometry->SDF mapper")
 
-    parser.add_argument('--data',        type=str, default='data/data_64x64',
+    parser.add_argument('--data_dir',        type=str, default='data/data_64x64',
                         help="Dir with mask.npy and dist_in.npy")
     parser.add_argument('--max_samples', type=int, default=None)
     parser.add_argument('--no-normalize-input', action='store_true')

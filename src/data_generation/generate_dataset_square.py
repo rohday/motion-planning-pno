@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # cli: python -m src.data_generation.generate_dataset [--n_samples 10000] [--resolution 64] [--output_dir data/pno_10k] [--seed 42] [--workers 8] [--min_free_ratio 0.55] [--max_free_ratio 0.75]
-
+# NOTE: This version generates CLUTTERED / JAGGED / FRAGMENTED maps
+#       (high-frequency obstacles). See generate_dataset_smooth_backup.py
+#       for the original smooth-blob pipeline.
 
 import argparse
 import multiprocessing as mp
@@ -11,59 +13,72 @@ from pathlib import Path
 import numpy as np
 import skfmm
 from scipy.ndimage import (
-    binary_opening,
+    binary_closing,
     distance_transform_edt,
-    gaussian_filter,
     label,
+    zoom,
 )
 
-def generate_random_map(size, rng, min_free=0.55, max_free=0.75,
-                        min_obstacle_px=20):
-    connectivity8 = np.ones((3, 3), dtype=bool)
-    for _ in range(200):
-        # 1. Fine-grained noise — small sigma keeps blobs small and jagged.
-        noise = rng.standard_normal((size, size))
-        sigma = rng.uniform(0.8, 1.6)
-        smooth = gaussian_filter(noise, sigma=sigma)
-        threshold = rng.uniform(-0.1, 0.4)
 
-        mask = (smooth > threshold).astype(np.float64)
+def generate_random_map(size, rng, min_free=0.55, max_free=0.75):
+    """Generate a cluttered 2-D occupancy map with jagged, fragmented obstacles.
 
-        # 2. Light morphology — just remove single-pixel noise, keep jaggedness.
-        structure = np.ones((2, 2), dtype=bool)
-        mask_bool = binary_opening(mask.astype(bool), structure=structure)
+    Pipeline
+    --------
+    1. Generate white noise at a *low* resolution (1/scale of target),
+       threshold it, then upscale with nearest-neighbour interpolation.
+       This produces blocky / fractal-like obstacle edges instead of smooth
+       Gaussian blobs.
+    2. Optionally layer a second, sparser noise pass at a different scale to
+       add additional clutter diversity.
+    3. Apply a minimal binary_closing (2×2 kernel) only to ensure narrow
+       1-pixel gaps don't completely isolate free regions.  NO binary_opening
+       is applied — small obstacle specks are intentionally preserved.
+    4. Keep the largest free-space connected component, add boundary walls,
+       and enforce the free-ratio constraint.
+    """
+    for _ in range(300):
+        # --- 1. Blocky low-res noise → nearest-neighbour upscale -----------
+        #  scale_factor in [3, 6]: lower → blockier / larger features
+        scale_factor = rng.integers(3, 7)  # 3..6 inclusive
+        lo_size = max(4, size // scale_factor)
 
-        # 3. Remove tiny obstacle specks but KEEP all free-space islands.
-        obstacle = ~mask_bool
-        obs_labeled, n_obs = label(obstacle, structure=connectivity8)
-        if n_obs > 0:
-            obs_sizes = np.bincount(obs_labeled.ravel())
-            for obs_id in range(1, len(obs_sizes)):
-                if obs_sizes[obs_id] < min_obstacle_px:
-                    mask_bool[obs_labeled == obs_id] = True
+        noise_lo = rng.standard_normal((lo_size, lo_size))
+        threshold = rng.uniform(-0.25, 0.35)
+        mask_lo = (noise_lo > threshold)  # True = free, False = obstacle
 
-        # 4. Remove tiny free-space blobs (keep only blobs >= min_blob_px).
-        min_blob_px = 8
-        free_labeled, n_free = label(mask_bool, structure=connectivity8)
+        # Up-scale to full resolution (order=0 → nearest-neighbour)
+        zoom_factor = size / lo_size
+        mask = zoom(mask_lo.astype(np.float64), zoom_factor, order=0) > 0.5
+
+        # --- 2. Optional second noise layer at finer scale for extra scatter
+        if rng.random() < 0.6:
+            fine_factor = rng.integers(2, 4)  # 2..3
+            fine_size = max(8, size // fine_factor)
+            noise_fine = rng.standard_normal((fine_size, fine_size))
+            fine_thresh = rng.uniform(-0.1, 0.4)
+            mask_fine = zoom(
+                (noise_fine > fine_thresh).astype(np.float64),
+                size / fine_size, order=0,
+            ) > 0.5
+            # Combine: a cell is free only if BOTH layers say free
+            mask = mask & mask_fine
+
+        # --- 3. Minimal closing (2×2) to seal hairline gaps ----------------
+        struct_small = np.ones((2, 2), dtype=bool)
+        mask = binary_closing(mask, structure=struct_small)
+
+        # --- 4. Largest free-space component + boundary walls --------------
+        free_labeled, n_free = label(mask)
         if n_free == 0:
             continue
         free_sizes = np.bincount(free_labeled.ravel())
-        clean_mask = np.zeros_like(mask_bool)
-        for fid in range(1, len(free_sizes)):
-            if free_sizes[fid] >= min_blob_px:
-                clean_mask[free_labeled == fid] = True
-
-        # 4b. Enforce one connected open-space region (8-connected).
-        free_labeled2, n_free2 = label(clean_mask, structure=connectivity8)
-        if n_free2 == 0:
+        if len(free_sizes) <= 1:
             continue
-        if n_free2 > 1:
-            free_sizes2 = np.bincount(free_labeled2.ravel())
-            largest_free_id = int(np.argmax(free_sizes2[1:]) + 1)
-            clean_mask = (free_labeled2 == largest_free_id)
+        largest_free_id = int(np.argmax(free_sizes[1:]) + 1)
+        mask = (free_labeled == largest_free_id)
 
-        # 5. Boundary walls.
-        mask = clean_mask.astype(np.float64)
+        mask = mask.astype(np.float64)
         mask[0, :] = 0.0
         mask[-1, :] = 0.0
         mask[:, 0] = 0.0
