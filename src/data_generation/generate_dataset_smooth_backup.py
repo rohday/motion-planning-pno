@@ -67,7 +67,7 @@ def generate_random_map(size, rng, min_free=0.55, max_free=0.75,
 
 
 def compute_sdf(mask):
-    return distance_transform_edt(mask != 0)
+    return distance_transform_edt(mask != 0) + distance_transform_edt(mask == 0)
 
 
 def compute_value_function(mask, sdf, goal):

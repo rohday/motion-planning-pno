@@ -42,7 +42,12 @@ def _infer_model_config(state: dict, checkpoint_path: str):
     width = int(state['fc0.weight'].shape[0])
     depth = len({k.split('.')[1] for k in state if k.startswith('blocks.') and k.endswith('.spectral.weights1')})
     modes = int(state['blocks.0.spectral.weights1'].shape[2])
-    deepnorm_hidden = int(state['deepnorm.weight1'].shape[0])
+    if 'deepnorm.weight1' in state:
+        deepnorm_hidden = int(state['deepnorm.weight1'].shape[0])
+    elif 'deep_norm.Us.0.weight' in state:
+        deepnorm_hidden = int(state['deep_norm.Us.0.weight'].shape[0])
+    else:
+        deepnorm_hidden = 64
 
     cfg = {
         'width': width,
@@ -86,7 +91,31 @@ def load_model(checkpoint_path: str, device: torch.device):
         beta=cfg['beta'],
         deepnorm_hidden=cfg['deepnorm_hidden'],
     ).to(device)
-    model.load_state_dict(state)
+    
+    # Handle legacy checkpoints
+    if 'deepnorm.weight1' in state:
+        print("[warn] Detected legacy deepnorm checkpoint. Patching model.deep_norm...")
+        import torch.nn as nn
+        import torch.nn.functional as F
+        class DeepNormProjection(nn.Module):
+            def __init__(self, width: int, hidden: int = 64):
+                super().__init__()
+                self.weight1 = nn.Parameter(torch.randn(hidden, width) * 0.01)
+                self.bias1 = nn.Parameter(torch.zeros(hidden))
+                self.weight2 = nn.Parameter(torch.randn(1, hidden) * 0.01)
+                self.bias2 = nn.Parameter(torch.zeros(1))
+            def forward(self, v_flat, g_flat):
+                delta = torch.abs(v_flat - g_flat)
+                w1_pos = F.softplus(self.weight1)
+                h = F.gelu(delta @ w1_pos.t() + self.bias1)
+                w2_pos = F.softplus(self.weight2)
+                out = h @ w2_pos.t() + self.bias2
+                return out.squeeze(-1)
+        
+        model.deepnorm = DeepNormProjection(cfg['width'], cfg['deepnorm_hidden']).to(device)
+        model.deep_norm = model.deepnorm # alias so forward() works
+    
+    model.load_state_dict(state, strict=False)
     model.eval()
 
     n_params = sum(p.numel() for p in model.parameters())

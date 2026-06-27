@@ -44,7 +44,7 @@ class PlanningNeuralOperator(nn.Module):
             activation=lambda: MaxReLUPairwiseActivation(deepnorm_hidden),
             concave_activation_size=20,
             mode="avg",
-            symmetric=True,
+            symmetric=False,
         )
 
     # ── helpers ───────────────────────────────────────────────────────────────

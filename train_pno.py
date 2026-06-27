@@ -32,8 +32,8 @@ def evaluate(model, loader, device, pde_loss_fn, lambda_sup=1.0, lambda_pde=1.0)
 			loss_sup = torch.zeros((), device=device)
 			if "value" in batch:
 				target = batch["value"].to(device)
-				free_mask = (raw_map > 0.5).float()
-				loss_sup = F.mse_loss(pred * free_mask, target * free_mask)
+				free_bool = raw_map > 0.5
+				loss_sup = F.mse_loss(pred[free_bool], target[free_bool])
 
 			loss_pde = pde_loss_fn(pred, raw_map)
 			loss = lambda_sup * loss_sup + lambda_pde * loss_pde
@@ -241,8 +241,8 @@ def train(args):
 			loss_sup = torch.zeros((), device=device)
 			if has_supervision and "value" in batch:
 				target = batch["value"].to(device)
-				free_mask = (raw_map > 0.5).float()
-				loss_sup = F.mse_loss(pred * free_mask, target * free_mask)
+				free_bool = raw_map > 0.5
+				loss_sup = F.mse_loss(pred[free_bool], target[free_bool])
 
 			loss_pde = pde_loss_fn(pred, raw_map)
 			loss = args.lambda_sup * loss_sup + args.lambda_pde * loss_pde

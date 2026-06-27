@@ -1,77 +1,66 @@
-# Planning Neural Operator (PNO) for Motion Planning
+# Planning Neural Operator (PNO)
 
----
+A continuous, generalizable neural operator framework for robotic motion planning, providing an optimal value function (cost-to-go) heuristic for graph search algorithms like A*.
 
 ## Overview
 
-The **Planning Neural Operator (PNO)** is a novel architecture designed to learn and compute optimal value functions (cost-to-go) from 2D obstacle environments to any specified goal position. The value function provides the shortest distance to reach a goal from every spatial location, effectively serving as an $\epsilon$-consistent heuristic for pathfinding algorithms like A*.
-
-Traditional planning algorithms rely on discrete graph searches, while standard CNNs struggle with strict physical constraints. PNO uses **Fourier Neural Operators (FNO)** to operate in continuous space, efficiently capturing global topological information while satisfying the Eikonal Partial Differential Equation (PDE).
-
-### Key Features
-- **Generalization**: Resolves the PDE in a resolution-invariant manner.
-- **Hardware-Agnostic**: Implemented efficiently using PyTorch.
-- **Physical Consistency**: DeepNorm projection head enforces triangle inequalities.
-- **End-to-End**: Learns from raw binary occupancy maps via an intermediate Continuous Signed Distance Field (SDF).
-
----
+The Planning Neural Operator (PNO) predicts the shortest path distance from every free-space coordinate to a specified goal coordinate in a 2D environment. Unlike standard Convolutional Neural Networks, PNO uses Fourier Neural Operators (FNO) to solve the Eikonal Partial Differential Equation (PDE) in a resolution-invariant, continuous domain. This value function is strictly admissible and acts as a highly efficient heuristic for A*, significantly reducing node expansions compared to standard Euclidean heuristics.
 
 ## System Architecture
 
-The pipeline consists of two primary models:
+The pipeline consists of two models trained sequentially: the SDF-FNO and the PNO.
 
 ### 1. SDF-FNO (Geometry to SDF)
-Binary occupancy maps are non-differentiable at boundaries. To enable smooth gradient-based operations, the binary map is first converted to a Continuous Signed Distance Field (SDF) using an FNO model. 
-- **Input**: Binary occupancy map $m(x)$
-- **Output**: Signed Distance Field $\text{SDF}(x)$
+Occupancy maps are binary and non-differentiable at boundaries. To enable smooth gradient-based operations for the main operator, the binary map is converted into a Continuous Unsigned Distance Field (SDF).
+- **Input:** Binary occupancy map $m(x)$ (1 for free space, 0 for obstacles).
+- **Output:** True unsigned distance field $SDF(x)$ representing the absolute distance to the nearest boundary from both inside and outside the obstacles.
+- **Model:** Standard Fourier Neural Operator (FNO2d).
 
 ### 2. Planning Neural Operator (PNO)
-The PNO learns the Eikonal solution directly by jointly conditioning on three inputs: the raw binary map, the continuous SDF, and the goal location.
-- **Input**: Concatenated tensor $[m(x), \text{SDF}(x), \mathbf{g}(x)]$
-- **Core Engine**: $4$ Domain-Agnostic Fourier Neural Operator (DAFNO) Blocks with a Smoothed Indicator Function (SIFN) mask.
-- **Output**: Value Function field $V(x, g)$.
-- **Projection**: A DeepNorm head guarantees that cost monotonically increases with distance.
+The main operator takes the geometry and goal, and outputs the optimal value function.
+- **Inputs:** A 3-channel tensor containing the raw occupancy map, the predicted continuous SDF, and a one-hot goal channel.
+- **Masking Mechanism (SIFN):** A Smoothed Indicator Function computes a continuous mask from the SDF: $\chi(x) = \tanh(\beta \cdot SDF(x)) \cdot (m(x) - 0.5) + 0.5$. This mask evaluates to 0 inside obstacles and 1 in free space, with a smooth differentiable transition exactly at the boundary.
+- **DAFNO Backbone:** 4 Domain-Agnostic Fourier Neural Operator (DAFNO) blocks propagate global topological information. To ensure information does not bleed through obstacles, the spectral convolution is strictly constrained by the mask: $x_{l+1} = \chi \cdot (\mathcal{K}(\chi \cdot x_l) + \mathcal{W}(x_l))$.
+- **Metric Projection (DeepNorm):** The final feature tensor is projected into a valid metric space. A non-negative constrained network (using Softplus weights and Concave Activations) enforces the triangle inequality. The strictly asymmetric form $f_\theta(\phi(x) - \phi(g))$ guarantees that the predicted cost-to-go is a valid, monotonically increasing distance metric.
 
----
+## Optimization & Loss Functions
+
+PNO is optimized using a dual-objective loss function computed exclusively over free-space coordinates:
+1. **Supervised Loss:** Mean Squared Error (MSE) against the Ground Truth value function (computed via Fast Marching Method).
+2. **PDE Loss:** An Eikonal loss residual $(||\nabla V|| - 1)^2$ computed via central finite differences.
 
 ## Repository Structure
 
-```
+```text
 motion-planning-pno/
-├── data/                      # Dataset arrays (.npy/.npz)
-├── checkpoints/               # Trained model weights and configs
+├── data/
+│   ├── data_10k_from_orig/    # Preprocessed dataset (mask, dist_in, goal, output)
+│   ├── cache_10k/             # Cached FNO-predicted SDFs for PNO training
+│   └── visualizations_10k/    # A* path extraction plots
+├── checkpoints/               # Trained FNO and PNO model weights
 ├── src/
-│   ├── fno/                   # FNO2dSDF model architecture
-│   ├── pno/                   # PNO, DAFNO blocks, and DeepNorm layers
-│   └── data_generation/       # Data preprocessing and caching utils
+│   ├── fno/                   # Standard FNO architecture for SDF generation
+│   ├── pno/                   # PNO, DAFNO blocks, and DeepNorm metric head
+│   └── data_generation/       # Parallelized data generation and FMM solvers
 ├── train_fno.py               # Training script for SDF-FNO
 ├── train_pno.py               # Training script for PNO
-├── evaluate_fno.py            # Evaluation script for SDF-FNO
-├── evaluate_pno.py            # Evaluation script for PNO
-├── visualize.py               # Data and result visualization tool
-└── requirements.txt           # Python dependencies
+├── evaluate_fno.py            # Evaluation and metric calculation for SDF-FNO
+├── evaluate_pno.py            # Evaluation and metric calculation for PNO
+└── path_extraction.py         # A* Benchmarking against Dijkstra and Euclidean
 ```
 
----
+## Execution Pipeline
 
-## Current Progress
+1. **Dataset Generation:** Generate randomized obstacle maps and exact Fast Marching Method (FMM) value functions.
+   `python src/data_generation/generate_10k_from_orig.py`
 
-### Phase 1: Repository Audit & Core Pipeline Assembly
-- **Architecture Validation**: Audited the existing PNO repository and aligned the codebase with efficient, hardware-agnostic design principles observed in reference implementations.
-- **Pipeline Completion**: Built missing components to establish a functional end-to-end evaluation pipeline (`evaluate_pno.py`, `evaluate_fno.py`).
-- **Bug Fixes**: Addressed critical bugs in the path extraction logic (`path_extraction.py`) and verified DAFNO forward pass formulas.
+2. **Train SDF-FNO:** Train the initial operator to predict continuous unsigned distance fields.
+   `python train_fno.py --data_dir data/data_10k_from_orig --output_dir checkpoints/fno_sdf_10k`
 
-### Phase 2: Data Generation & Physical Consistency
-- **SDF Generation Pipeline**: Improved the data generation scripts to produce highly accurate Signed Distance Functions (SDFs) and Eikonal-based value functions.
-- **Boundary Handling**: Resolved normalization inconsistencies and handled obstacle boundaries dynamically by coupling the raw map and SDF inputs correctly.
-- **DeepNorm Implementation**: Corrected the DeepNorm projection head to enforce physical constraints (monotonic cost increase with distance) according to the paper.
+3. **Train PNO:** Train the main operator. The script automatically predicts and caches SDFs using the trained FNO before commencing training.
+   `python train_pno.py --data_dir data/data_10k_from_orig --cache data/cache_10k/pno_cache.npz --fno_checkpoint checkpoints/fno_sdf_10k/model_best.ckpt --fno_config checkpoints/fno_sdf_10k/model_config.json --output_dir checkpoints/pno_10k`
 
-### Phase 3: Training Stability & Metric Optimization
-- **Data Pruning**: Analyzed the `data_new_10k` dataset distributions to identify and remove pathological outliers that were stalling training.
-- **Regularization & Hyperparameters**: Applied robust regularization (increased weight decay) and tuned hyperparameters (learning rate schedule, early stopping) to mitigate overfitting.
-- **Baseline Establishment**: Executed controlled training experiments on subset data to set solid performance baselines against the original reported results.
+4. **A* Benchmarking:** Extract paths using the trained neural heuristic.
+   `python path_extraction.py --checkpoint checkpoints/pno_10k/model_best.ckpt --cache data/cache_10k/pno_cache.npz --num_samples 10 --output_dir data/visualizations_10k`
 
-### Next Steps
-- Finalize the spectral attention mechanisms to evaluate any remaining differences with the paper's original DAFNO design.
-- Scale training to the full dataset using optimized hyperparameter sweeps.
-
+this part's done, next -> optimization of the code and hyperparameter tuning

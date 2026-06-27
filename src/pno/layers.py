@@ -11,7 +11,7 @@ import torch.nn.functional as F
 
 class ConstrainedLinear(nn.Linear):
     def forward(self, x):
-        return F.linear(x, torch.min(self.weight ** 2, torch.abs(self.weight)))
+        return F.linear(x, F.softplus(self.weight))
 
 
 # ── Activations ───────────────────────────────────────────────────────────────
@@ -190,9 +190,7 @@ class DAFNOBlock(nn.Module):
         # chi: (B, 1, H, W) → broadcast to (B, width, H, W)
         chi_w = chi.expand_as(x)
 
-        conv_chi  = self.spectral(chi_w)        # K(chi)
         conv_chix = self.spectral(chi_w * x)    # K(chi * x)
-        xconv_chi = x * conv_chi                # x * K(chi)
         wx        = self.local_conv(x)          # W(x)
 
-        return chi_w * (conv_chix - xconv_chi + wx)
+        return chi_w * (conv_chix + wx)
