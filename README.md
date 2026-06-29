@@ -6,8 +6,6 @@ A continuous, generalizable neural operator framework for robotic motion plannin
 
 ## Project Status & Milestones Completed
 
-This repository has evolved through a series of key milestones to audit, remediate, compress, and generalize the PNO pipeline:
-
 1. **Bug Remediation & Code Alignment**: Audited the initial codebase against the paper's reference implementation. Corrected critical implementation gaps in the DAFNO backbone, DeepNorm metric head, boundary condition handling for FNO-SDF, and the Eikonal loss function.
 2. **Sequential Pipeline Training**: 
    - Trained the **SDF-FNO** model to convert binary occupancy grids into continuous signed distance fields.
@@ -74,8 +72,8 @@ Evaluated over 100 random test samples on the 10k dataset (`data/cache_10k/pno_c
 Fourier Neural Operators are mathematically resolution-invariant, allowing a model trained on 64×64 maps to run on 256×256 or 512×512 grids. However, three quantities do not scale automatically and must be corrected at inference:
 
 1. **Goal Coordinates**: Must be passed in target-resolution pixel coordinates.
-2. **SDF Magnitudes**: Must be scaled by $\frac{\text{target\_res}}{\text{train\_res}}$ since FNO outputs training-resolution magnitudes.
-3. **Value Magnitudes**: The output values must be scaled by $\frac{\text{target\_res}}{\text{train\_res}}$ to convert unit-domain distance to pixel distance for the A* search.
+2. **SDF Magnitudes**: Must be scaled by `target_res / train_res` since FNO outputs training-resolution magnitudes.
+3. **Value Magnitudes**: The output values must be scaled by `target_res / train_res` to convert unit-domain distance to pixel distance for the A* search.
 
 To deploy super-resolution planning, use the implemented wrapper:
 ```python
@@ -96,8 +94,6 @@ heuristic = sr_planner(raw_map_256, goal_coords_256)
 ---
 
 ## Next Steps & Future Work
-
-If you are looking for what to tackle next, here are the primary paths:
 
 - [ ] **Real-world Map Benchmark**: Test the zero-shot super-resolution capability on real-life, high-resolution maps (e.g., from the original paper's benchmarks) to evaluate how well it handles complex, large-scale structures.
 - [ ] **Heuristic Admissibility Tuning**: Investigate weight-tying in the DeepNorm metric head or adjust the supervision loss weights to ensure strict admissibility (preventing A* from ever returning sub-optimal paths due to distance overestimation).
