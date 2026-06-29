@@ -199,6 +199,7 @@ def train(args):
 		modes1=args.modes,
 		modes2=args.modes,
 		depth=args.depth,
+		padding=args.padding,
 		beta=args.beta,
 		deepnorm_hidden=args.deepnorm_hidden,
 	).to(device)
@@ -358,8 +359,8 @@ if __name__ == "__main__":
 	parser.add_argument("--cache", type=str, default="data/cache_64x64/pno_cache.npz")
 	parser.add_argument("--output_dir", type=str, default="checkpoints/pno")
 	parser.add_argument("--cpu", action="store_true")
-	parser.add_argument("--fno_checkpoint", type=str, default="checkpoints/fno_sdf/model_best.ckpt")
-	parser.add_argument("--fno_config", type=str, default="checkpoints/fno_sdf/model_config.json")
+	parser.add_argument("--fno_checkpoint", type=str, default="checkpoints/fno_sdf_10k/model_best.ckpt")
+	parser.add_argument("--fno_config", type=str, default="checkpoints/fno_sdf_10k/model_config.json")
 	parser.add_argument("--fno_batch_size", type=int, default=128)
 	parser.add_argument(
 		"--use_fno_sdf",
@@ -377,6 +378,7 @@ if __name__ == "__main__":
 	parser.add_argument("--width", type=int, default=48)
 	parser.add_argument("--modes", type=int, default=12)
 	parser.add_argument("--depth", type=int, default=4)
+	parser.add_argument("--padding", type=int, default=9)
 	parser.add_argument("--beta", type=float, default=5.0)
 	parser.add_argument("--deepnorm_hidden", type=int, default=64)
 

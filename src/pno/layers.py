@@ -134,22 +134,24 @@ class DeepNormMetric(nn.Module):
 class SpectralConv2d(nn.Module):
     def __init__(self, in_channels: int, out_channels: int, modes1: int, modes2: int):
         super().__init__()
+        assert in_channels == out_channels, "Depthwise SpectralConv2d requires in_channels == out_channels"
         self.in_channels  = in_channels
         self.out_channels = out_channels
         self.modes1 = modes1
         self.modes2 = modes2
 
-        scale = 1 / (in_channels * out_channels)
+        scale = 1 / in_channels
         self.weights1 = nn.Parameter(
-            scale * torch.rand(in_channels, out_channels, modes1, modes2, dtype=torch.cfloat)
+            scale * torch.rand(in_channels, modes1, modes2, dtype=torch.cfloat)
         )
         self.weights2 = nn.Parameter(
-            scale * torch.rand(in_channels, out_channels, modes1, modes2, dtype=torch.cfloat)
+            scale * torch.rand(in_channels, modes1, modes2, dtype=torch.cfloat)
         )
 
     @staticmethod
     def _cmul(x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
-        return torch.einsum("bixy,ioxy->boxy", x, w)
+        # x: (B, C, X, Y), w: (C, X, Y) -> output: (B, C, X, Y)
+        return torch.einsum("bcxy,cxy->bcxy", x, w)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, C, H, W = x.shape
