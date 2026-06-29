@@ -10,13 +10,14 @@ from src.pno.layers import DAFNOBlock, DeepNormMetric, MaxReLUPairwiseActivation
 class PlanningNeuralOperator(nn.Module):
     def __init__(
         self,
-        width: int = 48,
-        modes1: int = 12,
-        modes2: int = 12,
+        width: int = 16,
+        modes1: int = 6,
+        modes2: int = 6,
         depth: int = 4,
-        padding: int = 9,
+        padding: int = 4,
         beta: float = 5.0,
-        deepnorm_hidden: int = 128,
+        deepnorm_hidden: int = 64,
+        concave_activation_size: int = 8,
     ):
         super().__init__()
 
@@ -42,7 +43,7 @@ class PlanningNeuralOperator(nn.Module):
             num_features=width,
             layers=(deepnorm_hidden, deepnorm_hidden),
             activation=lambda: MaxReLUPairwiseActivation(deepnorm_hidden),
-            concave_activation_size=20,
+            concave_activation_size=concave_activation_size,
             mode="avg",
             symmetric=False,
         )

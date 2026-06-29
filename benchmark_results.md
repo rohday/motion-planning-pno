@@ -1,21 +1,21 @@
 # PNO Benchmark Results (A* Path Extraction)
 
-Averaged benchmark results across 5 random test samples from the 10k dataset (`data/cache_10k/pno_cache.npz`).
+These benchmarks compare pathfinding metrics on the test split of the 10k dataset (`data/cache_10k/pno_cache.npz`). 
 
 | Algorithm / Heuristic | Average Nodes Expanded | Average Search Time | Notes |
 | :--- | :--- | :--- | :--- |
-| **Dijkstra** (No Heuristic) | 1,580 nodes | ~36.8 ms | Exhaustive baseline. |
-| **A* (Euclidean)** | 182 nodes | ~4.0 ms | Very fast, but oblivious to obstacles. |
-| **A* (Ground Truth)** | 148 nodes | ~3.4 ms | The theoretical baseline for a perfect admissible heuristic. |
-| **PNO (Old, 2.67M params)** | **127 nodes** | **~3.0 ms** | Phenomenal performance. Beat Ground Truth in node expansions because it slightly overestimates distances (breaking A* admissibility) but guides the search perfectly. |
-| **PNO (New, 82k elements)** | **488 nodes** | **~11.4 ms** | Still a massive ~3.2x improvement over Dijkstra, but much weaker than the old model. |
-| **PNO (Depthwise Compressed, 76k)** | **~173 nodes** | **~4.5 ms** | Massive improvement over the small-width model. Achieves near-paper performance while keeping parameters under 100k, though still occasionally breaks admissibility. |
+| **Dijkstra (No Heuristic)** | 1,580 | ~36.8 ms | Exhaustive baseline. |
+| **A* (Euclidean)** | 182 | ~4.0 ms | Baseline heuristic (oblivious to obstacles). |
+| **A* (Ground Truth)** | 148 | ~3.4 ms | Theoretical limit for an admissible heuristic. |
+| **PNO (Old, 2.67M params)** | **127** | **~3.0 ms** | Guides search efficiently, but breaks admissibility slightly (overestimates distances). |
+| **PNO (New, 82k elements)** | **488** | **~11.4 ms** | 3.2x faster than Dijkstra, but suffers from low capacity. |
+| **PNO (Depthwise Compressed, 76k)** | **~173** | **~4.5 ms** | Reclaims near-paper performance while keeping parameters under 100k. |
 
-## The Tradeoff
+---
 
-The old model is incredibly powerful. Because it had ~2.67 million complex elements, it had massive capacity to learn the exact shortest-path distance fields, acting as a "super-heuristic" that almost instantly tunnels to the goal. 
+### Capacity vs. Parameters Tradeoff
 
-The new model (which successfully matched the original paper's parameter target) is significantly more constrained. While it still heavily outperforms uninformed search (Dijkstra), the reduced capacity means its distance predictions are fuzzier. In fact, on one sample, the new model caused A* to return a slightly sub-optimal path (cost `54.63` instead of the true `44.38`) because its fuzzy predictions overestimated the true distance too much, breaking the A* admissibility guarantee.
+1. **The 2.67M Parameter Model**: With over 2.6M complex weights, this version has enough capacity to approximate the exact shortest-path distance fields, serving as a "super-heuristic" that tunnels directly to goals.
+2. **The 76k Compressed Model**: This model fits within the 100k parameter budget. While it performs well, the reduced capacity means its distance estimates are somewhat fuzzier, occasionally causing slightly sub-optimal path choices due to overestimation.
 
-**Conclusion:** 
-If the goal is to perfectly replicate the paper's extremely lightweight architecture, the new model does exactly that. However, if the goal is raw pathfinding speed and GPU memory is not a constraint, the original 2.67M parameter model is a **significantly** better heuristic in practice.
+If you need a highly compressed model that fits tight memory budgets, the depthwise version is the way to go. Otherwise, the original dense model is faster and more accurate.

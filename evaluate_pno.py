@@ -49,6 +49,12 @@ def _infer_model_config(state: dict, checkpoint_path: str):
     else:
         deepnorm_hidden = 64
 
+    # infer concave activation size
+    if 'deep_norm.output_activation.ms' in state:
+        concave_activation_size = int(state['deep_norm.output_activation.ms'].shape[-1])
+    else:
+        concave_activation_size = 8
+
     cfg = {
         'width': width,
         'depth': depth,
@@ -56,6 +62,7 @@ def _infer_model_config(state: dict, checkpoint_path: str):
         'padding': 9,
         'beta': 5.0,
         'deepnorm_hidden': deepnorm_hidden,
+        'concave_activation_size': concave_activation_size,
         'cache': 'data/cache_64x64/pno_cache.npz',
     }
 
@@ -90,6 +97,7 @@ def load_model(checkpoint_path: str, device: torch.device):
         padding=cfg['padding'],
         beta=cfg['beta'],
         deepnorm_hidden=cfg['deepnorm_hidden'],
+        concave_activation_size=cfg['concave_activation_size'],
     ).to(device)
     
     # Handle legacy checkpoints

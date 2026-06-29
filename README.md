@@ -73,3 +73,7 @@ Evaluated over 100 random test samples on the 10k dataset (`data/cache_10k/pno_c
 | **A\* (Euclidean)** | 261.1 | 5.86 ms | **1.00x** (Baseline) |
 | **A\* (PNO Compressed)** | **206.4** | **4.82 ms** | **1.22x** |
 | **A\* (Ground Truth)** | 183.9 | 4.27 ms | 1.37x |
+
+## Next: 
+
+Next step is to verify this with real life maps from the original paper, proper comparison, to see if it works properly or not.
