@@ -14,7 +14,6 @@ __pycache__/
 .eggs/
 dist/
 build/
-.gitignore
 
 # Virtual environment
 .venv/
@@ -30,6 +29,5 @@ env/
 *.swp
 
 # Documentation & Reports
-docs/
 *.pdf
 report.*
