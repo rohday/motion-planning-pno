@@ -4,5 +4,3 @@ matplotlib
 scikit-fmm
 torch
 torchvision
-
-sinteractive -c 20 -g 2 -A research -w gnode062
