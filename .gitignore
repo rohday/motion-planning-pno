@@ -28,3 +28,8 @@ env/
 # OS
 .DS_Store
 *.swp
+
+# Documentation & Reports
+docs/
+*.pdf
+report.*

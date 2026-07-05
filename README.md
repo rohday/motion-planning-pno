@@ -93,8 +93,17 @@ heuristic = sr_planner(raw_map_256, goal_coords_256)
 
 ---
 
+## Documentation & Reports
+
+Detailed reports and benchmarks have been generated and moved to the `docs/` directory:
+- [Zero-Shot Super-Resolution Audit](docs/super_resolution_audit.md)
+- [10k Dataset Benchmark Results](docs/benchmark_results.md)
+- [Real-World Map (IRL) Benchmark Report](docs/irl_benchmark_report.md)
+
+---
+
 ## Next Steps & Future Work
 
-- [ ] **Real-world Map Benchmark**: Test the zero-shot super-resolution capability on real-life, high-resolution maps (e.g., from the original paper's benchmarks) to evaluate how well it handles complex, large-scale structures.
+- [x] **Real-world Map Benchmark**: Tested the zero-shot super-resolution capability on real-life, high-resolution maps, demonstrating strong structural generalization (details in `docs/irl_benchmark_report.md`).
 - [ ] **Heuristic Admissibility Tuning**: Investigate weight-tying in the DeepNorm metric head or adjust the supervision loss weights to ensure strict admissibility (preventing A* from ever returning sub-optimal paths due to distance overestimation).
 - [ ] **Hardware Benchmark**: Profile the actual GPU/CPU memory consumption and forward pass latency at 512×512 and 1024×1024 resolutions to quantify the deployment savings of the compressed architecture.
