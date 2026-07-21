@@ -97,7 +97,6 @@ heuristic = sr_planner(raw_map_256, goal_coords_256)
 
 Detailed reports and benchmarks have been generated and moved to the `docs/` directory:
 - [Zero-Shot Super-Resolution Audit](docs/super_resolution_audit.md)
-- [10k Dataset Benchmark Results](docs/benchmark_results.md)
 - [Real-World Map (IRL) Benchmark Report](docs/irl_benchmark_report.md)
 
 ---
